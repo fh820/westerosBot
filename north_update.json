@@ -1,0 +1,148 @@
+[
+    {
+        "house": "Bolton",
+        "castle": "The Dreadfort",
+        "update": {
+            "base_income": 2400,
+            "note": "Buffed to reflect status as primary Stark rival."
+        }
+    },
+    {
+        "house": "Karstark",
+        "castle": "Karhold",
+        "update": {
+            "base_income": 1300
+        }
+    },
+    {
+        "house": "Umber",
+        "castle": "Last Hearth",
+        "update": {
+            "base_income": 1000
+        }
+    },
+    {
+        "house": "Stark",
+        "castle": "Moat Cailin",
+        "update": {
+            "base_income": 200,
+            "army_stats": {
+                "infantry": 100,
+                "cavalry": 0,
+                "archers": 400,
+                "ships": 0
+            },
+            "note": "Strategic choke point. High archer defense."
+        }
+    },
+    {
+        "house": "The North",
+        "castle": "Ramsgate",
+        "update": {
+            "base_income": 400,
+            "army_stats": {
+                "infantry": 100,
+                "cavalry": 0,
+                "archers": 50,
+                "ships": 10
+            },
+            "note": "Minor port on the Narrow Sea."
+        }
+    },
+    {
+        "house": "Ashwood",
+        "update": {
+            "x": 595, "y": 1130, "note": "Crannogman (Neck)"
+        }
+    },
+    {
+        "house": "Blackmyre",
+        "update": {
+            "x": 580, "y": 1140, "note": "Crannogman (Neck)"
+        }
+    },
+    {
+        "house": "Cray",
+        "update": {
+            "x": 600, "y": 1160, "note": "Crannogman (Neck)"
+        }
+    },
+    {
+        "house": "Fenn",
+        "update": {
+            "x": 570, "y": 1120, "note": "Crannogman (Neck)"
+        }
+    },
+    {
+        "house": "Greengood",
+        "update": {
+            "x": 590, "y": 1150, "note": "Crannogman (Neck)"
+        }
+    },
+    {
+        "house": "Peat",
+        "update": {
+            "x": 575, "y": 1155, "note": "Crannogman (Neck)"
+        }
+    },
+    {
+        "house": "Quagg",
+        "update": {
+            "x": 585, "y": 1125, "note": "Crannogman (Neck)"
+        }
+    },
+    {
+        "house": "Ironsmith",
+        "update": {
+            "x": 850, "y": 800, "base_income": 300, "note": "Placed near Weeping Water"
+        }
+    },
+    {
+        "house": "Holt",
+        "update": {
+            "x": 650, "y": 700, "base_income": 300, "note": "Wolfswood area"
+        }
+    },
+    {
+        "house": "Long",
+        "update": {
+            "x": 680, "y": 680, "base_income": 300, "note": "Wolfswood area"
+        }
+    },
+    {
+        "house": "Mollen",
+        "update": {
+            "x": 620, "y": 760, "base_income": 250, "note": "Near Winterfell"
+        }
+    },
+    {
+        "house": "Waterman",
+        "update": {
+            "x": 750, "y": 750, "base_income": 300, "note": "Near Hornwood"
+        }
+    },
+    {
+        "house": "Woolfield",
+        "update": {
+            "x": 720, "y": 950, "base_income": 400, "note": "Near White Harbor"
+        }
+    },
+    {
+        "house": "Lake",
+        "update": {
+            "x": 730, "y": 900
+        }
+    },
+    {
+        "house": "Lightfoot",
+        "update": {
+            "x": 550, "y": 850
+        }
+    },
+    {
+        "house": "Marsh",
+        "update": {
+            "x": 650, "y": 1100, "note": "Edge of the Neck"
+        }
+    }
+]

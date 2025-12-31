@@ -1,0 +1,166 @@
+[
+    {
+        "house": "Hayford",
+        "update": {
+            "x": 785,
+            "y": 1640,
+            "note": "Fixed coordinates (was off-map)."
+        }
+    },
+    {
+        "house": "Blount",
+        "update": {
+            "x": 790, "y": 1610, "base_income": 400
+        }
+    },
+    {
+        "house": "Boggs",
+        "update": {
+            "x": 1010, "y": 1490, "base_income": 350, "note": "Crackclaw Point"
+        }
+    },
+    {
+        "house": "Byrch",
+        "update": {
+            "x": 760, "y": 1680, "base_income": 400, "note": "Kingswood area"
+        }
+    },
+    {
+        "house": "Bywater",
+        "update": {
+            "x": 790, "y": 1675, "base_income": 400, "note": "Near KL"
+        }
+    },
+    {
+        "house": "Cave",
+        "update": {
+            "x": 1020, "y": 1510, "base_income": 350, "note": "Crackclaw Point"
+        }
+    },
+    {
+        "house": "Chelsted",
+        "update": {
+            "x": 840, "y": 1580, "base_income": 350, "note": "Near Duskendale"
+        }
+    },
+    {
+        "house": "Chyttering",
+        "update": {
+            "x": 950, "y": 1580, "base_income": 350, "note": "Massey's Hook"
+        }
+    },
+    {
+        "house": "Cressey",
+        "update": {
+            "x": 960, "y": 1460, "base_income": 350
+        }
+    },
+    {
+        "house": "Darke",
+        "update": {
+            "x": 860, "y": 1560, "base_income": 300, "note": "Minor Duskendale house"
+        }
+    },
+    {
+        "house": "Dargood",
+        "update": {
+            "x": 865, "y": 1565, "base_income": 300
+        }
+    },
+    {
+        "house": "Darkwood",
+        "update": {
+            "x": 870, "y": 1570, "base_income": 300
+        }
+    },
+    {
+        "house": "Edgerton",
+        "update": {
+            "x": 750, "y": 1690, "base_income": 400
+        }
+    },
+    {
+        "house": "Farring",
+        "update": {
+            "x": 770, "y": 1650, "base_income": 450, "note": "KL Garrison officers"
+        }
+    },
+    {
+        "house": "Follard",
+        "update": {
+            "x": 810, "y": 1630, "base_income": 400
+        }
+    },
+    {
+        "house": "Gaunt",
+        "update": {
+            "x": 840, "y": 1610, "base_income": 450
+        }
+    },
+    {
+        "house": "Hardy",
+        "update": {
+            "x": 1015, "y": 1470, "base_income": 350, "note": "Crackclaw Point"
+        }
+    },
+    {
+        "house": "Harte",
+        "update": {
+            "x": 790, "y": 1650, "base_income": 450
+        }
+    },
+    {
+        "house": "Kettleblack",
+        "update": {
+            "x": 780, "y": 1670, "base_income": 300, "note": "Assigning location near KL"
+        }
+    },
+    {
+        "house": "Langward",
+        "update": {
+            "x": 800, "y": 1550, "base_income": 350
+        }
+    },
+    {
+        "house": "Manning",
+        "update": {
+            "x": 920, "y": 1550, "base_income": 400
+        }
+    },
+    {
+        "house": "Pyle",
+        "update": {
+            "x": 890, "y": 1560, "base_income": 450
+        }
+    },
+    {
+        "house": "Pyne",
+        "update": {
+            "x": 990, "y": 1500, "base_income": 350, "note": "Crackclaw Point"
+        }
+    },
+    {
+        "house": "Rambton",
+        "update": {
+            "x": 800, "y": 1680, "base_income": 350
+        }
+    },
+    {
+        "house": "Rollingford",
+        "update": {
+            "x": 820, "y": 1640, "base_income": 400
+        }
+    },
+    {
+        "house": "Thorne",
+        "update": {
+            "x": 750, "y": 1550, "base_income": 450
+        }
+    },
+    {
+        "house": "Wendwater",
+        "update": {
+            "x": 760, "y": 1750, "base_income": 600, "note": "Placed on Wendwater river"
+        }
+    }
+]

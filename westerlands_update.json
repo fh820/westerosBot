@@ -1,0 +1,245 @@
+[
+    {
+        "house": "Reyne",
+        "castle": "Castamere",
+        "update": {
+            "base_income": 4500,
+            "army_stats": { "infantry": 2500, "cavalry": 1500, "archers": 1000, "ships": 0 },
+            "note": "Extinct house. Ruined castle."
+        }
+    },
+    {
+        "house": "Tarbeck",
+        "castle": "Tarbeck Hall",
+        "update": {
+            "base_income": 2000,
+            "army_stats": { "infantry": 1200, "cavalry": 600, "archers": 400, "ships": 0 },
+            "note": "Extinct house. Ruined castle."
+        }
+    },
+    {
+        "house": "Swyft",
+        "castle": "Cornfield",
+        "update": {
+            "army_stats": {
+                "infantry": 500,
+                "cavalry": 200,
+                "archers": 100,
+                "ships": 0
+            }
+        }
+    },
+    {
+        "house": "Spicer",
+        "castle": "Spicer Keep",
+        "update": {
+            "x": 380, "y": 1510,
+            "army_stats": {
+                "infantry": 300,
+                "cavalry": 50,
+                "archers": 50,
+                "ships": 0
+            },
+            "note": "Near Castamere."
+        }
+    },
+    {
+        "house": "Clegane",
+        "update": {
+            "base_income": 500
+        }
+    },
+    {
+        "house": "Payne",
+        "update": {
+            "base_income": 650,
+            "x": 340, "y": 1580, "note": "Near Casterly Rock"
+        }
+    },
+    {
+        "house": "Algood",
+        "update": {
+            "x": 360, "y": 1420, "note": "Near Banefort"
+        }
+    },
+    {
+        "house": "Bettley",
+        "update": {
+            "x": 330, "y": 1650, "note": "Near Lannisport"
+        }
+    },
+    {
+        "house": "Broom",
+        "update": {
+            "x": 300, "y": 1680, "note": "West coast"
+        }
+    },
+    {
+        "house": "Clifton",
+        "update": {
+            "x": 280, "y": 1540, "note": "Coast near Fair Isle"
+        }
+    },
+    {
+        "house": "Doggett",
+        "update": {
+            "x": 420, "y": 1550, "note": "Border hills"
+        }
+    },
+    {
+        "house": "Drox",
+        "update": {
+            "x": 330, "y": 1600, "note": "Near Casterly Rock"
+        }
+    },
+    {
+        "house": "Estren",
+        "update": {
+            "x": 360, "y": 1450, "note": "Wyndhall (Windy coast)"
+        }
+    },
+    {
+        "house": "Falwell",
+        "update": {
+            "x": 390, "y": 1450, "note": "Northern Westerlands"
+        }
+    },
+    {
+        "house": "Ferren",
+        "update": {
+            "x": 400, "y": 1530
+        }
+    },
+    {
+        "house": "Foote",
+        "update": {
+            "x": 430, "y": 1600, "note": "Near Deep Den"
+        }
+    },
+    {
+        "house": "Garner",
+        "update": {
+            "x": 390, "y": 1650
+        }
+    },
+    {
+        "house": "Hamell",
+        "update": {
+            "x": 410, "y": 1660
+        }
+    },
+    {
+        "house": "Harnell",
+        "update": {
+            "x": 420, "y": 1670
+        }
+    },
+    {
+        "house": "Hawthorne",
+        "update": {
+            "x": 430, "y": 1680
+        }
+    },
+    {
+        "house": "Hetherspoon",
+        "update": {
+            "x": 380, "y": 1550
+        }
+    },
+    {
+        "house": "Jast",
+        "update": {
+            "x": 350, "y": 1520
+        }
+    },
+    {
+        "house": "Kyndall",
+        "update": {
+            "x": 320, "y": 1580
+        }
+    },
+    {
+        "house": "Lannett",
+        "update": {
+            "x": 312, "y": 1635, "note": "Lannisport"
+        }
+    },
+    {
+        "house": "Lanny",
+        "update": {
+            "x": 308, "y": 1625, "note": "Lannisport"
+        }
+    },
+    {
+        "house": "Lantell",
+        "update": {
+            "x": 314, "y": 1628, "note": "Lannisport"
+        }
+    },
+    {
+        "house": "Lorch",
+        "update": {
+            "x": 400, "y": 1580
+        }
+    },
+    {
+        "house": "Moreland",
+        "update": {
+            "x": 390, "y": 1620
+        }
+    },
+    {
+        "house": "Myatt",
+        "update": {
+            "x": 410, "y": 1620
+        }
+    },
+    {
+        "house": "Peckledon",
+        "update": {
+            "x": 430, "y": 1580, "note": "Near borders"
+        }
+    },
+    {
+        "house": "Plumm",
+        "update": {
+            "x": 440, "y": 1550
+        }
+    },
+    {
+        "house": "Ruttiger",
+        "update": {
+            "x": 370, "y": 1600
+        }
+    },
+    {
+        "house": "Stackspear",
+        "update": {
+            "x": 380, "y": 1650
+        }
+    },
+    {
+        "house": "Turnberry",
+        "update": {
+            "x": 320, "y": 1660
+        }
+    },
+    {
+        "house": "Vikary",
+        "update": {
+            "x": 390, "y": 1500
+        }
+    },
+    {
+        "house": "Yarwyck",
+        "update": {
+            "x": 340, "y": 1490
+        }
+    },
+    {
+        "house": "Yew",
+        "update": {
+            "x": 350, "y": 1680
+        }
+    }
+]

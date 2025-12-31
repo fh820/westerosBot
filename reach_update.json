@@ -1,0 +1,307 @@
+[
+    {
+        "house": "Chester",
+        "castle": "Greenshield",
+        "update": {
+            "army_stats": {
+                "infantry": 500,
+                "cavalry": 100,
+                "archers": 200,
+                "ships": 40
+            },
+            "note": "Buffed ships for Shield Islands defense."
+        }
+    },
+    {
+        "house": "Grimm",
+        "castle": "Greyshield",
+        "update": {
+            "army_stats": {
+                "infantry": 400,
+                "cavalry": 100,
+                "archers": 200,
+                "ships": 40
+            },
+            "note": "Buffed ships for Shield Islands defense."
+        }
+    },
+    {
+        "house": "Hewett",
+        "castle": "Oakenshield",
+        "update": {
+            "army_stats": {
+                "infantry": 500,
+                "cavalry": 100,
+                "archers": 200,
+                "ships": 40
+            },
+            "note": "Buffed ships for Shield Islands defense."
+        }
+    },
+    {
+        "house": "Serry",
+        "castle": "Southshield",
+        "update": {
+            "army_stats": {
+                "infantry": 450,
+                "cavalry": 100,
+                "archers": 200,
+                "ships": 40
+            },
+            "note": "Buffed ships for Shield Islands defense."
+        }
+    },
+    {
+        "house": "Ambrose",
+        "update": {
+            "x": 400, "y": 1850, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Bridges",
+        "update": {
+            "x": 580, "y": 1810, "note": "Near Bitterbridge"
+        }
+    },
+    {
+        "house": "Bushy",
+        "update": {
+            "x": 570, "y": 1820, "note": "Near Bitterbridge"
+        }
+    },
+    {
+        "house": "Cobb",
+        "update": {
+            "x": 350, "y": 1950, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Cockshaw",
+        "update": {
+            "x": 420, "y": 1900, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Conklyn",
+        "update": {
+            "x": 430, "y": 1910, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Cordwayner",
+        "update": {
+            "x": 440, "y": 1920, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Dunn",
+        "update": {
+            "x": 460, "y": 1980, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Durwell",
+        "update": {
+            "x": 470, "y": 1990, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Graceford",
+        "update": {
+            "x": 480, "y": 1850, "note": "Near Holyhall"
+        }
+    },
+    {
+        "house": "Graves",
+        "update": {
+            "x": 490, "y": 1860, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Hastwyck",
+        "update": {
+            "x": 500, "y": 1870, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Hunt",
+        "update": {
+            "x": 450, "y": 2010, "note": "Near Horn Hill"
+        }
+    },
+    {
+        "house": "Hutchenson",
+        "update": {
+            "x": 460, "y": 1930, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Inchfield",
+        "update": {
+            "x": 470, "y": 1940, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Kidwell",
+        "update": {
+            "x": 480, "y": 1950, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Leygood",
+        "update": {
+            "x": 490, "y": 1960, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Lowther",
+        "update": {
+            "x": 500, "y": 1970, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Lyberr",
+        "update": {
+            "x": 510, "y": 1980, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Middlebury",
+        "update": {
+            "x": 520, "y": 1990, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Norcross",
+        "update": {
+            "x": 530, "y": 2000, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Norridge",
+        "update": {
+            "x": 540, "y": 2010, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Oldflowers",
+        "update": {
+            "x": 550, "y": 2020, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Orme",
+        "update": {
+            "x": 560, "y": 2030, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Osgrey",
+        "update": {
+            "x": 460, "y": 1800, "note": "Near Standfast"
+        }
+    },
+    {
+        "house": "Peake",
+        "castle": "Starpike",
+        "update": {
+            "x": 510, "y": 2050, "note": "Dornish Marches"
+        }
+    },
+    {
+        "house": "Pommingham",
+        "update": {
+            "x": 570, "y": 2040, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Redding",
+        "update": {
+            "x": 580, "y": 2050, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Rhysling",
+        "update": {
+            "x": 590, "y": 2060, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Risley",
+        "update": {
+            "x": 600, "y": 2070, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Roxton",
+        "update": {
+            "x": 390, "y": 1820, "note": "Near The Ring"
+        }
+    },
+    {
+        "house": "Shermer",
+        "update": {
+            "x": 610, "y": 2080, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Sloane",
+        "update": {
+            "x": 620, "y": 2090, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Stackhouse",
+        "update": {
+            "x": 630, "y": 2100, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Uffering",
+        "update": {
+            "x": 640, "y": 2110, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Varner",
+        "update": {
+            "x": 650, "y": 2120, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Vyrwel",
+        "update": {
+            "x": 520, "y": 2060, "note": "Near Darkdell"
+        }
+    },
+    {
+        "house": "Westbrook",
+        "update": {
+            "x": 660, "y": 2130, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Willum",
+        "update": {
+            "x": 670, "y": 2140, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Woodwright",
+        "update": {
+            "x": 680, "y": 2150, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Wythers",
+        "update": {
+            "x": 690, "y": 2160, "note": "Approximate location"
+        }
+    },
+    {
+        "house": "Yelshire",
+        "update": {
+            "x": 700, "y": 2170, "note": "Approximate location"
+        }
+    }
+]

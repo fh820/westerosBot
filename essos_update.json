@@ -1,0 +1,128 @@
+[
+    {
+        "house": "Volantis",
+        "castle": "Selhorys",
+        "update": {
+            "base_income": 1500,
+            "army_stats": {
+                "infantry": 500,
+                "cavalry": 0,
+                "archers": 100,
+                "ships": 0
+            }
+        }
+    },
+    {
+        "house": "Volantis",
+        "castle": "Valysar",
+        "update": {
+            "base_income": 1500,
+            "army_stats": {
+                "infantry": 500,
+                "cavalry": 0,
+                "archers": 100,
+                "ships": 0
+            }
+        }
+    },
+    {
+        "house": "Volantis",
+        "castle": "Volon Therys",
+        "update": {
+            "base_income": 1500,
+            "army_stats": {
+                "infantry": 500,
+                "cavalry": 0,
+                "archers": 100,
+                "ships": 0
+            }
+        }
+    },
+    {
+        "house": "Free City",
+        "castle": "Volantis",
+        "update": {
+            "army_stats": {
+                "infantry": 6000,
+                "cavalry": 1500,
+                "archers": 2000,
+                "ships": 150
+            }
+        }
+    },
+    {
+        "house": "Free City",
+        "castle": "Myr",
+        "update": {
+            "army_stats": {
+                "infantry": 2000,
+                "cavalry": 500,
+                "archers": 1500,
+                "ships": 40
+            },
+            "note": "Known for Crossbowmen"
+        }
+    },
+    {
+        "house": "Free City",
+        "castle": "Norvos",
+        "update": {
+            "army_stats": {
+                "infantry": 2500,
+                "cavalry": 200,
+                "archers": 300,
+                "ships": 0
+            },
+            "note": "Bearded Priests/Axe-men"
+        }
+    },
+    {
+        "house": "Free City",
+        "castle": "Qohor",
+        "update": {
+            "army_stats": {
+                "infantry": 3000,
+                "cavalry": 100,
+                "archers": 400,
+                "ships": 0
+            },
+            "note": "Famous for Unsullied defenders"
+        }
+    },
+    {
+        "house": "Free City",
+        "castle": "Tyrosh",
+        "update": {
+            "army_stats": {
+                "infantry": 2000,
+                "cavalry": 500,
+                "archers": 500,
+                "ships": 80
+            }
+        }
+    },
+    {
+        "house": "Free City",
+        "castle": "Pentos",
+        "update": {
+            "army_stats": {
+                "infantry": 1500,
+                "cavalry": 200,
+                "archers": 300,
+                "ships": 60
+            }
+        }
+    },
+    {
+        "house": "Free City",
+        "castle": "Lorath",
+        "update": {
+            "army_stats": {
+                "infantry": 500,
+                "cavalry": 0,
+                "archers": 0,
+                "ships": 20
+            }
+        }
+    }
+]

@@ -1,0 +1,127 @@
+[
+    {
+        "house": "Greyjoy",
+        "castle": "Pyke",
+        "update": {
+            "base_income": 2200,
+            "army_stats": {
+                "infantry": 3000, 
+                "cavalry": 0,
+                "archers": 600,
+                "ships": 120
+            },
+            "note": "Massive Infantry boost (3000) to compensate for 0 Cav. Plus huge Fleet."
+        }
+    },
+    {
+        "house": "Harlaw",
+        "castle": "Ten Towers",
+        "update": {
+            "base_income": 1600,
+            "army_stats": {
+                "infantry": 1500,
+                "cavalry": 100, 
+                "archers": 500,
+                "ships": 60
+            },
+            "note": "Kept 100 Cav (Harlaw ponies). Strong Infantry."
+        }
+    },
+    {
+        "house": "Goodbrother",
+        "castle": "Hammerhorn",
+        "update": {
+            "base_income": 1400,
+            "army_stats": {
+                "infantry": 1600,
+                "cavalry": 0,
+                "archers": 400,
+                "ships": 40
+            },
+            "note": "The Great Wyk army. High manpower."
+        }
+    },
+    {
+        "house": "Botley",
+        "castle": "Lordsport",
+        "update": {
+            "base_income": 900,
+            "army_stats": {
+                "infantry": 1200,
+                "cavalry": 0,
+                "archers": 300,
+                "ships": 30
+            },
+            "note": "Buffed Infantry significantly to match original BP."
+        }
+    },
+    {
+        "house": "Drumm",
+        "castle": "Old Wyk",
+        "update": {
+            "base_income": 600,
+            "army_stats": {
+                "infantry": 800,
+                "cavalry": 0,
+                "archers": 200,
+                "ships": 35
+            }
+        }
+    },
+    {
+        "house": "Blacktyde",
+        "update": {
+            "army_stats": { "infantry": 500, "cavalry": 0, "archers": 100, "ships": 20 }
+        }
+    },
+    {
+        "house": "Orkwood",
+        "update": {
+            "army_stats": { "infantry": 500, "cavalry": 0, "archers": 100, "ships": 25 }
+        }
+    },
+    {
+        "house": "Saltcliffe",
+        "update": {
+            "army_stats": { "infantry": 600, "cavalry": 0, "archers": 100, "ships": 25 }
+        }
+    },
+    {
+        "house": "Stonehouse",
+        "update": {
+            "army_stats": { "infantry": 650, "cavalry": 0, "archers": 100, "ships": 30 }
+        }
+    },
+    {
+        "house": "Sunderly",
+        "update": {
+            "army_stats": { "infantry": 1200, "cavalry": 0, "archers": 200, "ships": 45 },
+            "note": "House of the Drowned Man. Heavy infantry focus."
+        }
+    },
+    {
+        "house": "Wynch",
+        "update": {
+            "army_stats": { "infantry": 1200, "cavalry": 0, "archers": 200, "ships": 45 }
+        }
+    },
+    {
+        "house": "Farwynd of the Lonely Light",
+        "update": {
+            "army_stats": { "infantry": 250, "cavalry": 0, "archers": 50, "ships": 15 },
+            "note": "Isolated, weird, specialized."
+        }
+    },
+    {
+        "house": "Merlyn",
+        "update": {
+            "army_stats": { "infantry": 600, "cavalry": 0, "archers": 100, "ships": 35 }
+        }
+    },
+    {
+        "house": "Tawney",
+        "update": {
+             "army_stats": { "infantry": 800, "cavalry": 0, "archers": 150, "ships": 40 }
+        }
+    }
+]

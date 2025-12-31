@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  # 1. The Discord Bot
+  bot:
+    build: .
+    command: python -m app.bot
+    volumes:
+      - .:/app
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    restart: always
+
+  # 2. The Background Worker (Celery)
+  # We will implement the code for this in the next step, but we set up the container now.
+  worker:
+    build: .
+    command: celery -A app.tasks.celery_app worker --loglevel=info
+    volumes:
+      - .:/app
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    restart: always
+
+  # 3. The Database (PostgreSQL)
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: westeros_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - '5432:5432' # Allows you to connect to DB from your PC tools
+
+  # 4. The Message Queue (Redis)
+  redis:
+    image: redis:7-alpine
+
+volumes:
+  postgres_data:

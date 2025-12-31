@@ -1,0 +1,130 @@
+[
+    {
+        "house": "Arryn",
+        "castle": "The Eyrie",
+        "update": {
+            "army_stats": {
+                "infantry": 2500,
+                "cavalry": 2500,
+                "archers": 1500,
+                "ships": 0
+            },
+            "note": "Total: 6500. Strong Cavalry, balanced against Lannister/Tyrell."
+        }
+    },
+    {
+        "house": "Arryn",
+        "castle": "The Bloody Gate",
+        "update": {
+            "army_stats": {
+                "infantry": 500,
+                "cavalry": 0,
+                "archers": 1000,
+                "ships": 0
+            },
+            "note": "1500 defenders. High archer count for the choke point."
+        }
+    },
+    {
+        "house": "Waynwood",
+        "castle": "Ironoaks",
+        "update": {
+            "army_stats": {
+                "infantry": 800,
+                "cavalry": 400,
+                "archers": 300,
+                "ships": 0
+            }
+        }
+    },
+    {
+        "house": "Hunter",
+        "castle": "Longbow Hall",
+        "update": {
+            "army_stats": {
+                "infantry": 500,
+                "cavalry": 100,
+                "archers": 800,
+                "ships": 0
+            }
+        }
+    },
+    {
+        "house": "Longthorpe",
+        "castle": "Longsister",
+        "update": {
+            "army_stats": {
+                "infantry": 300,
+                "cavalry": 0,
+                "archers": 100,
+                "ships": 40
+            }
+        }
+    },
+    {
+        "house": "Black Ears",
+        "update": {
+            "x": 780, "y": 1330, "note": "Mountains of the Moon"
+        }
+    },
+    {
+        "house": "Burned Men",
+        "update": {
+            "x": 790, "y": 1340, "note": "Mountains of the Moon"
+        }
+    },
+    {
+        "house": "Howlers",
+        "update": {
+            "x": 800, "y": 1350, "note": "Mountains of the Moon"
+        }
+    },
+    {
+        "house": "Milk Snakes",
+        "update": {
+            "x": 770, "y": 1320, "note": "Mountains of the Moon"
+        }
+    },
+    {
+        "house": "Moon Brothers",
+        "update": {
+            "x": 760, "y": 1310, "note": "Mountains of the Moon"
+        }
+    },
+    {
+        "house": "Other Clans (Vale)",
+        "update": {
+            "x": 810, "y": 1360, "note": "High Road Ambush"
+        }
+    },
+    {
+        "house": "Painted Dogs",
+        "update": {
+            "x": 750, "y": 1300, "note": "Mountains of the Moon"
+        }
+    },
+    {
+        "house": "Redsmith",
+        "update": {
+            "x": 740, "y": 1290, "note": "Mountains of the Moon"
+        }
+    },
+    {
+        "house": "Sons of the Mist",
+        "update": {
+            "x": 730, "y": 1280, "note": "Mountains of the Moon"
+        }
+    },
+    {
+        "house": "Sons of the Tree",
+        "update": {
+            "x": 720, "y": 1270, "note": "Mountains of the Moon"
+        }
+    },
+    {
+        "house": "Stone Crows",
+        "update": {
+            "x": 820, "y": 1370, "note": "Near the High Road"
+        }
+    }
+]

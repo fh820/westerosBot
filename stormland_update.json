@@ -1,0 +1,174 @@
+[
+    {
+        "house": "Swann",
+        "castle": "Stonehelm",
+        "update": {
+            "base_income": 2200,
+            "army_stats": {
+                "infantry": 2000,
+                "cavalry": 600,
+                "archers": 600,
+                "ships": 15
+            },
+            "note": "Buffed to reflect status as major Marcher Lord."
+        }
+    },
+    {
+        "house": "Dondarrion",
+        "castle": "Blackhaven",
+        "update": {
+            "base_income": 1800,
+            "army_stats": {
+                "infantry": 1500,
+                "cavalry": 800,
+                "archers": 400,
+                "ships": 0
+            }
+        }
+    },
+    {
+        "house": "Tarth",
+        "castle": "Tarth",
+        "update": {
+            "army_stats": {
+                "infantry": 1500,
+                "cavalry": 300,
+                "archers": 400,
+                "ships": 60
+            },
+            "note": "Buffed naval strength for island defense."
+        }
+    },
+    {
+        "house": "Bolling",
+        "update": {
+            "x": 920, "y": 1830, "note": "Near Storm's End"
+        }
+    },
+    {
+        "house": "Cafferen",
+        "update": {
+            "x": 880, "y": 1750, "note": "Near Fawnton"
+        }
+    },
+    {
+        "house": "Cole",
+        "update": {
+            "x": 750, "y": 1960, "note": "Near Blackhaven"
+        }
+    },
+    {
+        "house": "Gower",
+        "update": {
+            "x": 940, "y": 1870, "note": "Cape Wrath"
+        }
+    },
+    {
+        "house": "Grandison",
+        "update": {
+            "x": 850, "y": 1850, "note": "Near Gallowsgrey"
+        }
+    },
+    {
+        "house": "Hasty",
+        "update": {
+            "x": 860, "y": 1860, "note": "Stormlands interior"
+        }
+    },
+    {
+        "house": "Herston",
+        "update": {
+            "x": 950, "y": 1880, "note": "Cape Wrath"
+        }
+    },
+    {
+        "house": "Horpe",
+        "update": {
+            "x": 960, "y": 1890, "note": "Cape Wrath"
+        }
+    },
+    {
+        "house": "Kellington",
+        "update": {
+            "x": 970, "y": 1900, "note": "Cape Wrath"
+        }
+    },
+    {
+        "house": "Lonmouth",
+        "update": {
+            "x": 910, "y": 1840, "note": "Near Storm's End"
+        }
+    },
+    {
+        "house": "Musgood",
+        "update": {
+            "x": 980, "y": 1820, "note": "Near Tarth straits"
+        }
+    },
+    {
+        "house": "Peasebury",
+        "update": {
+            "x": 890, "y": 1780, "note": "Near Bronzegate"
+        }
+    },
+    {
+        "house": "Penrose",
+        "update": {
+            "x": 840, "y": 1820, "note": "Near Felwood"
+        }
+    },
+    {
+        "house": "Rogers",
+        "update": {
+            "x": 990, "y": 1920, "note": "Rainwood"
+        }
+    },
+    {
+        "house": "Staedmon",
+        "update": {
+            "x": 830, "y": 1830, "note": "Near Broad Arch"
+        }
+    },
+    {
+        "house": "Swygert",
+        "update": {
+            "x": 820, "y": 1840, "note": "Internal Stormlands"
+        }
+    },
+    {
+        "house": "Trant",
+        "update": {
+            "x": 840, "y": 1880, "note": "Near Gallowsgrey"
+        }
+    },
+    {
+        "house": "Tudbury",
+        "update": {
+            "x": 900, "y": 1810, "note": "Near Storm's End"
+        }
+    },
+    {
+        "house": "Wagstaff",
+        "update": {
+            "x": 810, "y": 1900, "note": "Near Stonehelm"
+        }
+    },
+    {
+        "house": "Wensington",
+        "update": {
+            "x": 850, "y": 1890, "note": "Near Gallowsgrey"
+        }
+    },
+    {
+        "house": "Whitehead",
+        "update": {
+            "x": 960, "y": 2010, "base_income": 1100, "note": "Weeping Town (Trade Port)"
+        }
+    },
+    {
+        "house": "Wylde",
+        "update": {
+            "x": 1015, "y": 1916, "base_income": 800
+        }
+    }
+]

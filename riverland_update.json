@@ -1,0 +1,209 @@
+[
+    {
+        "house": "Wode",
+        "update": {
+            "liege": "Whent",
+            "x": 680, "y": 1490, "note": "Vassals of Harrenhal"
+        }
+    },
+    {
+        "house": "Butterwell",
+        "castle": "Whitewalls",
+        "update": {
+            "base_income": 1200, "note": "Razed to the ground."
+        }
+    },
+    {
+        "house": "Frey",
+        "castle": "The Twins",
+        "update": {
+            "base_income": 2800,
+            "army_stats": {
+                "infantry": 3000,
+                "cavalry": 800,
+                "archers": 800,
+                "ships": 0
+            },
+            "note": "Buffed to reflect bridge toll wealth."
+        }
+    },
+    {
+        "house": "Mallister",
+        "castle": "Seagard",
+        "update": {
+            "base_income": 1600,
+            "note": "Balanced against Frey/Whent."
+        }
+    },
+    {
+        "house": "Whent",
+        "castle": "Harrenhal",
+        "update": {
+            "base_income": 2000,
+            "note": "Reflects vast lands."
+        }
+    },
+    {
+        "house": "Bigglestone",
+        "update": {
+            "x": 620, "y": 1450
+        }
+    },
+    {
+        "house": "Blanetree",
+        "update": {
+            "x": 560, "y": 1430
+        }
+    },
+    {
+        "house": "Chambers",
+        "update": {
+            "x": 580, "y": 1470
+        }
+    },
+    {
+        "house": "Charlton",
+        "update": {
+            "x": 550, "y": 1280
+        }
+    },
+    {
+        "house": "Deddings",
+        "update": {
+            "x": 610, "y": 1480
+        }
+    },
+    {
+        "house": "Erenford",
+        "update": {
+            "x": 570, "y": 1260
+        }
+    },
+    {
+        "house": "Goodbrook",
+        "update": {
+            "x": 630, "y": 1420
+        }
+    },
+    {
+        "house": "Grell",
+        "update": {
+            "x": 555, "y": 1460
+        }
+    },
+    {
+        "house": "Grey",
+        "update": {
+            "x": 640, "y": 1440
+        }
+    },
+    {
+        "house": "Haigh",
+        "update": {
+            "x": 580, "y": 1220
+        }
+    },
+    {
+        "house": "Hawick",
+        "update": {
+            "x": 650, "y": 1350
+        }
+    },
+    {
+        "house": "Keath",
+        "update": {
+            "x": 660, "y": 1380
+        }
+    },
+    {
+        "house": "Lolliston",
+        "update": {
+            "x": 540, "y": 1500
+        }
+    },
+    {
+        "house": "Lychester",
+        "update": {
+            "x": 610, "y": 1510
+        }
+    },
+    {
+        "house": "Nayland",
+        "update": {
+            "x": 590, "y": 1300
+        }
+    },
+    {
+        "house": "Nutt",
+        "update": {
+            "x": 620, "y": 1490
+        }
+    },
+    {
+        "house": "Paege",
+        "update": {
+            "x": 630, "y": 1520
+        }
+    },
+    {
+        "house": "Perryn",
+        "update": {
+            "x": 640, "y": 1480
+        }
+    },
+    {
+        "house": "Shawney",
+        "update": {
+            "x": 600, "y": 1530
+        }
+    },
+    {
+        "house": "Smallwood",
+        "update": {
+            "x": 520, "y": 1510,
+            "base_income": 650
+        }
+    },
+    {
+        "house": "Terrick",
+        "update": {
+            "x": 590, "y": 1490
+        }
+    },
+    {
+        "house": "Vypren",
+        "update": {
+            "x": 550, "y": 1480
+        }
+    },
+    {
+        "house": "Wayn",
+        "update": {
+            "x": 570, "y": 1450
+        }
+    },
+    {
+        "house": "Landmark",
+        "castle": "Fairmarket",
+        "update": {
+             "army_stats": {
+                "infantry": 300,
+                "cavalry": 0,
+                "archers": 100,
+                "ships": 0
+            }
+        }
+    },
+    {
+        "house": "Landmark",
+        "castle": "Stoney Sept",
+        "update": {
+             "army_stats": {
+                "infantry": 400,
+                "cavalry": 0,
+                "archers": 200,
+                "ships": 0
+            }
+        }
+    }
+]

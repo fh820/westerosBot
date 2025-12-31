@@ -1,0 +1,41 @@
+{
+    "meta": {
+        "name": "The Dance of the Dragons",
+        "year": 129,
+        "description": "The realm is torn between Rhaenyra and Aegon II."
+    },
+    "updates": [
+        {
+            "castle": "Harrenhal",
+            "rename_owner_to": "Strong",
+            "base_income": 3000
+        },
+        {
+            "castle": "Duskendale",
+            "rename_owner_to": "Darklyn"
+        },
+        {
+            "castle": "Driftmark",
+            "base_income": 7500,
+            "army_update": {
+                "infantry": 1500,
+                "cavalry": 750,
+                "archers": 250,
+                "ships": 111
+            },
+            "note": "Sea Snake's peak wealth"
+        },
+        {
+            "castle": "Summerhall",
+            "is_ruined": false,
+            "rename_owner_to": "Targaryen",
+            "base_income": 500
+        },
+        {
+            "castle": "Castamere",
+            "is_ruined": false,
+            "rename_owner_to": "Reyne",
+            "base_income": 2500
+        }
+    ]
+}
