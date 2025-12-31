@@ -7,6 +7,9 @@ import os
 import time
 import asyncio
 import io
+import hashlib
+import pickle
+import redis
 
 # --- MATPLOTLIB (THREAD-SAFE SETUP) ---
 from matplotlib.figure import Figure
@@ -35,6 +38,17 @@ COSTS = {
 
 class Pathfinder:
     def __init__(self, data_file, cost_map_file, map_file):
+        print("Redis Initializing...")
+        # Initialize Redis
+        try:
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            # 2. Convert string -> Connection Object
+            self.redis = redis.from_url(redis_url)
+            print("Pathfinder connected to Redis.")
+        except Exception as e:
+            print(f"Warning: Redis connection failed. Caching disabled. {e}")
+            self.redis = None
+
         print("Pathfinder Engine Initializing...")
         with open(data_file, "r") as f:
             self.data = json.load(f)
@@ -76,6 +90,21 @@ class Pathfinder:
                 if self._normalize(d["castle"]) == target_slug:
                     return d
         return None
+
+    def _generate_cache_key(
+        self, start_loc, end_loc, waypoints, gm_settings, travel_mode
+    ):
+        """Generates a unique hash based on trip parameters and game settings."""
+        payload = {
+            "s": start_loc,
+            "e": end_loc,
+            "w": waypoints,
+            "m": travel_mode,
+            "cfg": gm_settings,  # Crucial: if settings change (bridges close), key changes
+        }
+        # Create a consistent string and hash it
+        payload_str = json.dumps(payload, sort_keys=True, default=str)
+        return f"pathfinder:{hashlib.md5(payload_str.encode()).hexdigest()}"
 
     def _build_cost_grid(self, gm_settings, travel_mode):
         grid = self.cost_map.astype(np.float64)
@@ -128,6 +157,23 @@ class Pathfinder:
         NEW FEATURE: If travel_mode='hybrid_segment', it forces Sea->Waypoint->Land.
         """
         start_time = time.perf_counter()
+
+        # --- 1. CHECK REDIS CACHE ---
+        cache_key = None
+        if self.redis:
+            try:
+                cache_key = self._generate_cache_key(
+                    start_loc, end_loc, waypoints, gm_settings, travel_mode
+                )
+                cached_data = self.redis.get(cache_key)
+                if cached_data:
+                    # Cache Hit! Deserialize
+                    result = pickle.loads(cached_data)
+                    # Reconstruct BytesIO object from raw bytes
+                    result["image"] = io.BytesIO(result["image_bytes"])
+                    return result
+            except Exception as e:
+                print(f"Redis Read Error: {e}")
 
         # 1. Resolve All Stops
         all_stops = [self._get_location(s) for s in [start_loc] + waypoints + [end_loc]]
@@ -306,9 +352,30 @@ class Pathfinder:
         image_buffer.seek(0)
         del fig, canvas, ax
 
-        return {
+        # return {
+        #     "image": image_buffer,
+        #     "total_distance": float(total_pixel_distance),
+        #     "terrain_breakdown": terrain_breakdown,
+        #     "path_points": list(zip(full_path_x, full_path_y)),
+        # }
+        # Extract raw bytes for pickling
+        image_bytes = image_buffer.getvalue()
+
+        # Construct result dictionary
+        result = {
             "image": image_buffer,
+            "image_bytes": image_bytes,  # Needed for serialization
             "total_distance": float(total_pixel_distance),
             "terrain_breakdown": terrain_breakdown,
             "path_points": list(zip(full_path_x, full_path_y)),
         }
+
+        # --- SAVE TO REDIS (24 Hour Expiry) ---
+        if self.redis and cache_key:
+            try:
+                # Store the whole result dict (including image_bytes)
+                self.redis.setex(cache_key, 86400, pickle.dumps(result))
+            except Exception as e:
+                print(f"Redis Write Error: {e}")
+
+        return result
