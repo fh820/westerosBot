@@ -308,7 +308,7 @@ class EconomyService:
 
     async def run_fiscal_year(self, game_id: int) -> list[str]:
         """
-        1. Calculates income (Base * Integration).
+        1. Calculates income (Base * Integration) from non-ruined fiefs.
         2. Increases Integration for next year.
         3. Pays taxes (Dynamic Rate).
         4. Returns a list of report pages (strings).
@@ -331,20 +331,31 @@ class EconomyService:
         for house in houses:
             house_income = 0
 
+            # FIX #1: Filter fiefs for manpower calculation to exclude ruins
+            active_fiefs = [f for f in house.fiefs if not f.is_ruined]
+
             # Manpower Regen
-            manpower_cap = sum(f.base_manpower for f in house.fiefs)
-            primary_region = house.fiefs[0].region if house.fiefs else None
+            manpower_cap = sum(f.base_manpower for f in active_fiefs)
+            primary_region = active_fiefs[0].region if active_fiefs else None
             regen_rate = REPOPULATION_RATES.get(primary_region, DEFAULT_REGEN)
             regen_amount = int(manpower_cap * regen_rate)
             house.manpower = min(manpower_cap, house.manpower + regen_amount)
             house.manpower_cap = manpower_cap
 
             # Gold Income
-            for f in house.fiefs:
-                real_income = int(f.base_income * f.integration)
-                house_income += real_income
+            for (
+                f
+            ) in (
+                house.fiefs
+            ):  # Iterate over all to increase integration, but only add income if not ruined
+
+                # FIX #2: Only add income if the fief is not ruined
+                if not f.is_ruined:
+                    real_income = int(f.base_income * f.integration)
+                    house_income += real_income
 
                 # Recovery Logic: Increase integration by 25% per year, max 1.0
+                # This should run on all fiefs, even ruined ones, to allow them to recover if they are ever repaired.
                 if f.integration < 1.0:
                     f.integration = min(1.0, f.integration + 0.25)
 
@@ -412,15 +423,7 @@ class EconomyService:
     ) -> tuple[list, int]:
         """
         Calculates the projected tax income for a liege from all their direct vassals.
-
-        Args:
-            liege_house_id: The database ID of the liege house.
-
-        Returns:
-            A tuple containing:
-            - A list of tuples, where each inner tuple contains:
-              (vassal_name, gross_income, tax_rate, tax_amount)
-            - An integer representing the total projected tax income.
+        This version correctly ignores income from ruined fiefs.
         """
         # 1. Find all direct vassals of the specified liege
         stmt = (
@@ -440,8 +443,12 @@ class EconomyService:
 
         # 2. Iterate through each vassal to calculate their tax contribution
         for vassal in vassals:
-            # Calculate the vassal's gross income from their lands, respecting integration
-            gross_income = sum(int(f.base_income * f.integration) for f in vassal.fiefs)
+            # FIX #3: Calculate gross income only from non-ruined lands
+            gross_income = sum(
+                int(f.base_income * f.integration)
+                for f in vassal.fiefs
+                if not f.is_ruined
+            )
 
             # Determine the tax rate. Use the specific rate set for the vassal, or a default of 10%
             rate = vassal.tax_rate if vassal.tax_rate is not None else 0.10
