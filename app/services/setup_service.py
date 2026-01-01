@@ -387,12 +387,24 @@ class SetupService:
         )
 
     async def calculate_initial_treasury(self, game_id: int):
+        """
+        Sets every House's starting treasury to 2x the sum of their Fiefs' income.
+        This version correctly ignores income from ruined fiefs.
+        """
+        # Subquery to sum base_income per owner from NON-RUINED fiefs
         income_subquery = (
             select(func.sum(Fief.base_income))
-            .where(Fief.owner_id == House.house_id)
+            .where(
+                (Fief.owner_id == House.house_id)  # Link to the correct house
+                & (
+                    Fief.is_ruined == False
+                )  # FIX: Only include non-ruined fiefs in the sum
+            )
             .correlate(House)
             .scalar_subquery()
         )
+
+        # Update treasury to 2x the calculated income
         stmt = (
             update(House)
             .where(House.game_id == game_id)
