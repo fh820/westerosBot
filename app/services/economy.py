@@ -406,3 +406,54 @@ class EconomyService:
             pages.append(content)
 
         return pages
+
+    async def calculate_tax_income_for_house(
+        self, liege_house_id: int
+    ) -> tuple[list, int]:
+        """
+        Calculates the projected tax income for a liege from all their direct vassals.
+
+        Args:
+            liege_house_id: The database ID of the liege house.
+
+        Returns:
+            A tuple containing:
+            - A list of tuples, where each inner tuple contains:
+              (vassal_name, gross_income, tax_rate, tax_amount)
+            - An integer representing the total projected tax income.
+        """
+        # 1. Find all direct vassals of the specified liege
+        stmt = (
+            select(House)
+            .where(House.liege_id == liege_house_id)
+            .options(
+                selectinload(House.fiefs)
+            )  # Eagerly load fiefs to calculate income
+        )
+        vassals = (await self.session.execute(stmt)).scalars().all()
+
+        if not vassals:
+            return [], 0
+
+        total_tax_income = 0
+        vassal_reports = []
+
+        # 2. Iterate through each vassal to calculate their tax contribution
+        for vassal in vassals:
+            # Calculate the vassal's gross income from their lands, respecting integration
+            gross_income = sum(int(f.base_income * f.integration) for f in vassal.fiefs)
+
+            # Determine the tax rate. Use the specific rate set for the vassal, or a default of 10%
+            rate = vassal.tax_rate if vassal.tax_rate is not None else 0.10
+            rate = max(0.0, min(1.0, rate))  # Clamp the rate between 0% and 100%
+
+            # Calculate the final tax amount
+            tax_amount = int(gross_income * rate)
+
+            # Add this vassal's tax to the total
+            total_tax_income += tax_amount
+
+            # Store the details for the report
+            vassal_reports.append((vassal.name, gross_income, rate, tax_amount))
+
+        return vassal_reports, total_tax_income

@@ -1423,6 +1423,69 @@ class EconomyCog(commands.Cog):
                 f"✅ GM added **{amount} {unit_type}** to the **{fief.name}** garrison for **{target_house.name}** {cost_str}."
             )
 
+    @commands.command(name="tax_income")
+    @commands.check(is_in_house_channel)
+    async def tax_income(self, ctx):
+        """Calculates and displays your expected tax income from all vassals."""
+        async with get_session() as session:
+            house = await self._get_player_house(session, ctx)
+            if not house:
+                return await ctx.send("❌ You do not have a house in this game.")
+
+            service = EconomyService(session)
+            vassals, total_tax = await service.calculate_tax_income_for_house(
+                house.house_id
+            )
+
+            if not vassals:
+                return await ctx.send("You have no vassals to collect taxes from.")
+
+            embed = discord.Embed(
+                title=f"Tax Income Report for House {house.name}",
+                color=discord.Color.green(),
+            )
+            report_lines = []
+            for v_name, v_income, v_rate, tax_val in vassals:
+                status = "✅" if v_rate > 0 else "🚫"
+                report_lines.append(
+                    f"{status} **{v_name}**: Grosses {v_income} * {int(v_rate*100)}% = **{tax_val} Gold**"
+                )
+
+            embed.description = "\n".join(report_lines)
+            embed.set_footer(text=f"Total Expected Tax Income: {total_tax} Gold")
+            await ctx.send(embed=embed)
+
+    @gm_econ.command(name="tax_income")
+    async def gm_tax_income(self, ctx, *, house_identifier: str):
+        """GM: Calculates the tax income for a specific house."""
+        async with get_session() as session:
+            house = await HouseRepo.get_house_by_name_or_id(session, house_identifier)
+            if not house:
+                return await ctx.send(f"❌ House `{house_identifier}` not found.")
+
+            service = EconomyService(session)
+            vassals, total_tax = await service.calculate_tax_income_for_house(
+                house.house_id
+            )
+
+            if not vassals:
+                return await ctx.send(f"**{house.name}** has no vassals.")
+
+            embed = discord.Embed(
+                title=f"GM | Tax Income for House {house.name}",
+                color=discord.Color.blue(),
+            )
+            report_lines = []
+            for v_name, v_income, v_rate, tax_val in vassals:
+                status = "✅" if v_rate > 0 else "🚫"
+                report_lines.append(
+                    f"{status} **{v_name}**: Grosses {v_income} * {int(v_rate*100)}% = **{tax_val} Gold**"
+                )
+
+            embed.description = "\n".join(report_lines)
+            embed.set_footer(text=f"Total Expected Tax Income: {total_tax} Gold")
+            await ctx.send(embed=embed)
+
 
 async def setup(bot):
     await bot.add_cog(EconomyCog(bot))
