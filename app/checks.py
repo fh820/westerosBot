@@ -41,43 +41,46 @@ from app.db.repositories import GameRepo
 
 # In app/checks.py
 async def is_in_house_channel(ctx: commands.Context) -> bool:
-    """
-    A custom check to ensure a command is run in the user's private house channel.
-    """
-    print("\n--- CHECK: is_in_house_channel ---")  # DEBUG START
+    print("\n--- CHECK: is_in_house_channel ---")
 
-    # 1. Check for Admin Bypass
-    is_admin = ctx.author.guild_permissions.administrator
-    print(f"[DEBUG] Is user an admin? {is_admin}")
-    if is_admin:
-        print("--- RESULT: TRUE (Admin Bypass) ---\n")
+    # 1. Admin Bypass
+    if ctx.author.guild_permissions.administrator:
         return True
 
     # 2. Database Lookup
     async with get_session() as session:
+        # Load BOTH house and character
         stmt = (
             select(GamePlayer)
             .join(User)
             .where(User.discord_id == ctx.author.id)
-            .options(selectinload(GamePlayer.house))
+            .options(
+                selectinload(GamePlayer.house),
+                selectinload(GamePlayer.character),  # Make sure to load the character!
+            )
         )
         player = (await session.execute(stmt)).scalars().first()
 
-        if not player or not player.house:
-            print("[DEBUG] DB Check: Player or House not found.")
-            print("--- RESULT: FALSE (No House Claim) ---\n")
+        if not player:
             return False
 
-        # 3. Channel Name Comparison
-        expected_channel_name = (
-            f"{player.house.name.lower().replace(' ', '-')}-quarters"
-        )
+        # 3. Logic: Check against both House Name AND Character Name
+        # This allows them to use their personal quarters OR the main house quarters
         actual_channel_name = ctx.channel.name
 
-        print(f"[DEBUG] Expected Channel: '{expected_channel_name}'")
-        print(f"[DEBUG] Actual Channel:   '{actual_channel_name}'")
+        possible_names = []
+        if player.house:
+            possible_names.append(player.house.name.lower().replace(" ", "-"))
+        if player.character:
+            possible_names.append(player.character.name.lower().replace(" ", "-"))
 
-        result = actual_channel_name == expected_channel_name
+        # Check if the current channel matches "[name]-quarters" for either house or character
+        valid_channels = [f"{name}-quarters" for name in possible_names]
+
+        print(f"[DEBUG] Valid Channels: {valid_channels}")
+        print(f"[DEBUG] Actual Channel: '{actual_channel_name}'")
+
+        result = actual_channel_name in valid_channels
         print(f"--- RESULT: {result} --- \n")
         return result
 
