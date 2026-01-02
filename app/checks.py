@@ -4,7 +4,7 @@ from app.db.db_manager import get_session
 from app.db.models import Game, GamePlayer, User
 from sqlalchemy.orm import selectinload
 from app.db.repositories import GameRepo
-
+from app.services.common import slugify
 
 # async def is_in_house_channel(ctx: commands.Context) -> bool:
 #     """
@@ -35,52 +35,60 @@ from app.db.repositories import GameRepo
 #             f"{player.house.name.lower().replace(' ', '-')}-quarters"
 #         )
 
-#         # 4. Compare with the current channel and return the result.
-#         return ctx.channel.name == expected_channel_name
 
-
-# In app/checks.py
 async def is_in_house_channel(ctx: commands.Context) -> bool:
-    print("\n--- CHECK: is_in_house_channel ---")
+    print(f"\n--- CHECK: is_in_house_channel for {ctx.author.name} ---")
 
-    # 1. Admin Bypass
     if ctx.author.guild_permissions.administrator:
         return True
 
-    # 2. Database Lookup
+    if ctx.channel.name in ["bot-testing", "gm-requests"]:
+        return True
+
     async with get_session() as session:
-        # Load BOTH house and character
+        # IMPORTANT: Filter by the active game so we don't get 'Rhaegar' from a past session
+        # We assume you have a way to get the current game_id,
+        # similar to how you do it in the approve command.
+        from app.db.models import Game  # Adjust import as needed
+
+        # Get the active game for this server
+        game_stmt = select(Game).where(
+            Game.guild_id == ctx.guild.id, Game.is_active == True
+        )
+        game = (await session.execute(game_stmt)).scalars().first()
+
+        if not game:
+            return False
+
         stmt = (
             select(GamePlayer)
             .join(User)
             .where(User.discord_id == ctx.author.id)
+            .where(GamePlayer.game_id == game.game_id)  # Filter by active game!
             .options(
                 selectinload(GamePlayer.house),
-                selectinload(GamePlayer.character),  # Make sure to load the character!
+                selectinload(GamePlayer.character),
             )
         )
         player = (await session.execute(stmt)).scalars().first()
 
         if not player:
+            print("[DEBUG] No player record found for this active game.")
             return False
 
-        # 3. Logic: Check against both House Name AND Character Name
-        # This allows them to use their personal quarters OR the main house quarters
         actual_channel_name = ctx.channel.name
 
-        possible_names = []
+        # Use slugify to match Discord's channel format
+        valid_slugs = []
         if player.house:
-            possible_names.append(player.house.name.lower().replace(" ", "-"))
+            valid_slugs.append(f"{slugify(player.house.name)}-quarters")
         if player.character:
-            possible_names.append(player.character.name.lower().replace(" ", "-"))
+            valid_slugs.append(f"{slugify(player.character.name)}-quarters")
 
-        # Check if the current channel matches "[name]-quarters" for either house or character
-        valid_channels = [f"{name}-quarters" for name in possible_names]
-
-        print(f"[DEBUG] Valid Channels: {valid_channels}")
+        print(f"[DEBUG] Valid Slugs for {ctx.author.name}: {valid_slugs}")
         print(f"[DEBUG] Actual Channel: '{actual_channel_name}'")
 
-        result = actual_channel_name in valid_channels
+        result = actual_channel_name in valid_slugs
         print(f"--- RESULT: {result} --- \n")
         return result
 

@@ -551,62 +551,75 @@ class EconomyCog(commands.Cog):
     @commands.command()
     async def crown_transfer(self, ctx, target: discord.Member, amount: int):
         """
-        Master of Coin Only: Transfer money from the Crown to someone.
+        Master of Coin Only: Transfer money from the KL Royal Treasury to a player's house.
         """
         moc_role = discord.utils.get(ctx.guild.roles, name="Master of Coin")
-        if (
-            not moc_role or moc_role not in ctx.author.roles
-        ) and not ctx.author.guild_permissions.administrator:
+        is_admin = ctx.author.guild_permissions.administrator
+
+        if not (is_admin or (moc_role and moc_role in ctx.author.roles)):
             await ctx.send("❌ You are not the Master of Coin.")
             return
 
         async with get_session() as session:
+            # 1. Get Active Game
+            from app.db.models import (
+                Game,
+                House,
+                Fief,
+                GamePlayer,
+                User,
+            )  # Ensure imports
+
             stmt_game = select(Game).where(
                 Game.guild_id == ctx.guild.id, Game.is_active == True
             )
             game = (await session.execute(stmt_game)).scalars().first()
             if not game:
-                await ctx.send("❌ No active game.")
-                return
+                return await ctx.send("❌ No active game.")
 
-            crown_house_name = game.ruling_house
-            stmt_house = select(House).where(
-                House.game_id == game.game_id, House.name == crown_house_name
+            # 2. FIND THE ROYAL TREASURY (The house owning King's Landing)
+            stmt_crown = (
+                select(House)
+                .join(Fief)
+                .where(Fief.name == "King's Landing", House.game_id == game.game_id)
             )
-            crown_house = (await session.execute(stmt_house)).scalars().first()
+            crown_house = (await session.execute(stmt_crown)).scalars().first()
 
             if not crown_house:
-                await ctx.send(
-                    f"❌ Ruling House **{crown_house_name}** not found in DB."
-                )
-                return
+                return await ctx.send("❌ Royal Treasury (King's Landing) not found.")
 
             if crown_house.treasury < amount:
-                await ctx.send(
+                return await ctx.send(
                     f"❌ The Crown is in debt! Treasury: {crown_house.treasury}"
                 )
-                return
 
+            # 3. FIND THE TARGET PLAYER'S PRIMARY HOUSE
             stmt_target = (
-                select(House)
-                .join(GamePlayer)
+                select(GamePlayer)
                 .join(User)
-                .where(User.discord_id == target.id, House.game_id == game.game_id)
+                .where(User.discord_id == target.id, GamePlayer.game_id == game.game_id)
+                .options(selectinload(GamePlayer.house))  # Load the relationship
             )
-            target_house = (await session.execute(stmt_target)).scalars().first()
+            target_player = (await session.execute(stmt_target)).scalars().first()
 
-            if not target_house:
-                await ctx.send(
-                    f"❌ {target.mention} does not control a House or Faction."
-                )
-                return
+            if not target_player or not target_player.house:
+                return await ctx.send(f"❌ {target.mention} does not control a House.")
 
+            target_house = target_player.house
+
+            # 4. Prevent transferring to self
+            if crown_house.house_id == target_house.house_id:
+                return await ctx.send("❌ Cannot transfer from the Crown to the Crown.")
+
+            # 5. Perform Transfer
             crown_house.treasury -= amount
             target_house.treasury += amount
+
             await session.commit()
 
             await ctx.send(
-                f"💸 **The Crown** transfers **{amount} gold** to **{target_house.name}** ({target.mention})."
+                f"💸 **The Iron Throne** ({crown_house.name}) transfers **{amount} gold** to **{target_house.name}** ({target.mention}).\n"
+                f"⚖️ **New Crown Balance:** {crown_house.treasury}"
             )
 
     @commands.command(name="year_end")

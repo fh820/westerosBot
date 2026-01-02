@@ -10,6 +10,8 @@ from app.db.models import House, GamePlayer, User, Army
 from app.ui.paginator import Paginator
 from app.checks import is_in_house_channel
 import datetime
+import re
+from app.services.common import slugify
 
 
 class GameplayCog(commands.Cog):
@@ -167,6 +169,7 @@ class GameplayCog(commands.Cog):
     #     await ctx.send(embed=embeds[0], view=view)
 
     # --- HELPER METHODS ---
+
     async def _render_detailed_dashboard(
         self, ctx: commands.Context, data: dict, is_gm_view: bool = False
     ):
@@ -1299,7 +1302,9 @@ class GameplayCog(commands.Cog):
 
                     # Create private channel
                     if role_f:
-                        c_name = f"{faction.name.lower().replace(' ', '-')}-quarters"
+                        # USE SLUGIFY HERE
+                        slug = slugify(faction.name)
+                        c_name = f"{slug}-quarters"
                         channel = await self.create_private_channel(
                             ctx, c_name, "Great Houses", overwrites
                         )

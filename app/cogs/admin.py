@@ -688,22 +688,72 @@ class AdminCog(commands.Cog):
                     f"This is the root cause of the error. It means the bot cannot find a `GamePlayer` associated with your Discord ID for this specific game."
                 )
 
-    @commands.command()
+    @commands.command(name="set_crown")
     @commands.has_permissions(administrator=True)
-    async def set_crown(self, ctx, *, house_name: str):
-        """Changes the Ruling House."""
+    async def set_crown(self, ctx, target: discord.Member):
+        """Assigns a user to the main Royal House (King's Landing)."""
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
-            stmt = select(House).where(
-                House.game_id == game.game_id, House.name.ilike(house_name)
+            # Find the house holding King's Landing
+            stmt = (
+                select(House)
+                .join(Fief)
+                .where(Fief.name == "King's Landing", House.game_id == game.game_id)
             )
             house = (await session.execute(stmt)).scalars().first()
             if not house:
-                await ctx.send(f"❌ House **{house_name}** not found.")
-                return
-            game.ruling_house = house.name
-            await session.commit()
-            await ctx.send(f"👑 **The Crown** is now held by **House {house.name}**.")
+                return await ctx.send("❌ Royal House not found.")
+
+            await self._assign_player_to_house(session, game.game_id, target, house)
+            await ctx.send(
+                f"👑 **The Iron Throne:** {target.mention} is now the **King** ({house.name})."
+            )
+
+    @commands.command(name="set_heir")
+    @commands.has_permissions(administrator=True)
+    async def set_heir(self, ctx, target: discord.Member):
+        """Assigns a user to the Heir House (Dragonstone)."""
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            stmt = (
+                select(House)
+                .join(Fief)
+                .where(Fief.name == "Dragonstone", House.game_id == game.game_id)
+            )
+            house = (await session.execute(stmt)).scalars().first()
+            if not house:
+                return await ctx.send("❌ Heir House not found.")
+
+            await self._assign_player_to_house(session, game.game_id, target, house)
+            await ctx.send(
+                f"🐉 **Dragonstone:** {target.mention} is now the **Crown Prince** ({house.name})."
+            )
+
+    # Helper function to handle the DB logic for both
+    async def _assign_player_to_house(self, session, game_id, target, house):
+        # 1. Get or create User
+        stmt_u = select(User).where(User.discord_id == target.id)
+        user = (await session.execute(stmt_u)).scalars().first()
+        if not user:
+            user = User(discord_id=target.id)
+            session.add(user)
+            await session.flush()
+
+        # 2. Get or create GamePlayer record
+        stmt_p = select(GamePlayer).where(
+            GamePlayer.user_id == user.user_id, GamePlayer.game_id == game_id
+        )
+        player = (await session.execute(stmt_p)).scalars().first()
+        if not player:
+            # If they haven't claimed a char yet, we force-create a player record
+            player = GamePlayer(game_id=game_id, user_id=user.user_id)
+            session.add(player)
+            await session.flush()
+
+        # 3. Update Head status
+        player.claimed_house_id = house.house_id
+        player.is_primary = True
+        await session.commit()
 
     @commands.command()
     @commands.has_permissions(administrator=True)
@@ -715,53 +765,86 @@ class AdminCog(commands.Cog):
             success, msg = await service.load_scenario(ctx.guild.id, scenario_name)
             await ctx.send(msg)
 
-    @commands.command()
+    @commands.command(name="force_grant")
     @commands.has_permissions(administrator=True)
-    async def force_grant(self, ctx, castle_name: str, target: discord.Member):
-        """GM Tool: Force transfer a fief."""
+    async def force_grant(self, ctx, target: discord.Member, *, castle_name: str):
+        """
+        GM Tool: Force transfer a fief, its garrisons, and its vassals to a player's house.
+        Usage: !force_grant @User Dragonstone
+        """
         async with get_session() as session:
-            from app.db.models import Fief, Army
+            # Imports inside to ensure they are available in context
+            from app.db.models import Fief, Army, House, GamePlayer, User
+            from app.services.setup_service import SetupService
 
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
-                return
+                return await ctx.send("❌ No active game found.")
 
+            # 1. Find the Fief
             stmt_fief = select(Fief).where(
                 Fief.name.ilike(castle_name), Fief.game_id == game.game_id
             )
             fief = (await session.execute(stmt_fief)).scalars().first()
             if not fief:
-                await ctx.send(f"❌ Fief **{castle_name}** not found.")
-                return
+                return await ctx.send(f"❌ Fief **{castle_name}** not found.")
 
+            # 2. Find the Target Player
             stmt_target = (
                 select(GamePlayer)
                 .join(User)
                 .where(User.discord_id == target.id, GamePlayer.game_id == game.game_id)
             )
             target_p = (await session.execute(stmt_target)).scalars().first()
+
             if not target_p or not target_p.claimed_house_id:
-                await ctx.send(f"❌ Target has no claimed house.")
-                return
+                return await ctx.send(
+                    f"❌ {target.display_name} must have a house/character first (use !approve or !set_head)."
+                )
 
-            old_owner_id = fief.owner_id
-            fief.owner_id = target_p.claimed_house_id
+            old_owner_house_id = fief.owner_id
+            new_house_id = target_p.claimed_house_id
 
+            # 3. Transfer Fief Ownership
+            fief.owner_id = new_house_id
+
+            # 4. Transfer Army Ownership (Land & Sea)
             stmt_army = select(Army).where(
-                Army.house_id == old_owner_id,
+                Army.game_id == game.game_id,
                 Army.location_x == fief.location_x,
                 Army.location_y == fief.location_y,
-                Army.status == "GARRISONED",
             )
-            garrisons = (await session.execute(stmt_army)).scalars().all()
-            for army in garrisons:
-                army.house_id = target_p.claimed_house_id
-                army.commander_name = f"Garrison of {fief.name}"
+            armies_at_loc = (await session.execute(stmt_army)).scalars().all()
+            for army in armies_at_loc:
+                army.house_id = new_house_id
 
-            await session.commit()
-            await ctx.send(
-                f"⚡ **GM Intervention:** **{castle_name}** seized and granted to {target.mention}."
+            # 5. Transfer Vassalage (Taxes/Banners)
+            # If the fief being granted was a "Liege Seat", move its vassals to the new house
+            stmt_vassals = select(House).where(
+                House.liege_id == old_owner_house_id, House.game_id == game.game_id
             )
+            vassals = (await session.execute(stmt_vassals)).scalars().all()
+
+            vassal_count = 0
+            for vassal in vassals:
+                vassal.liege_id = new_house_id
+                vassal_count += 1
+
+            # 6. Recalculate Manpower (Sync stats)
+            await session.commit()  # Commit first so SetupService sees the new ownership
+            setup_service = SetupService(session)
+            await setup_service.calculate_initial_manpower(game.game_id)
+            await session.commit()
+
+            msg = (
+                f"⚡ **GM Intervention:** **{fief.name}** granted to {target.mention}.\n"
+                f"🎖️ {len(armies_at_loc)} garrisons transferred.\n"
+            )
+            if vassal_count > 0:
+                msg += f"📜 {vassal_count} vassal houses now report to {target.display_name}.\n"
+
+            msg += "ℹ️ Manpower and Military Strength synchronized."
+            await ctx.send(msg)
 
     @commands.command(name="toggleupkeep")
     @commands.has_permissions(administrator=True)
