@@ -221,7 +221,7 @@
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
-from app.db.models import House, Fief, Army
+from app.db.models import House, Fief, Army, GamePlayer
 
 REPOPULATION_RATES = {
     "The North": 0.02,
@@ -307,160 +307,166 @@ class EconomyService:
         )
 
     async def run_fiscal_year(self, game_id: int) -> list[str]:
-        """
-        1. Calculates income (Base * Integration) from non-ruined fiefs.
-        2. Increases Integration for next year.
-        3. Pays taxes (Dynamic Rate).
-        4. Returns a list of report pages (strings).
-        """
-        # 1. Fetch Data
-        stmt = (
+        # 1. Fetch Houses and Fiefs
+        stmt_houses = (
             select(House)
             .where(House.game_id == game_id)
             .options(selectinload(House.fiefs))
         )
-        houses = (await self.session.execute(stmt)).scalars().all()
-
-        # Map for quick liege lookup
+        houses = (await self.session.execute(stmt_houses)).scalars().all()
         house_map = {h.house_id: h for h in houses}
 
-        gross_incomes = {}
-        transaction_lines = []
+        # 2. Manual Player Lookup (to avoid model changes)
+        stmt_players = (
+            select(GamePlayer)
+            .where(GamePlayer.game_id == game_id)
+            .options(selectinload(GamePlayer.character))
+        )
+        all_players = (await self.session.execute(stmt_players)).scalars().all()
 
-        # 2. Process Income & Integration
+        player_lookup = {}
+        for p in all_players:
+            if p.claimed_house_id and (
+                p.is_primary or p.claimed_house_id not in player_lookup
+            ):
+                player_lookup[p.claimed_house_id] = p
+
+        def get_name(h):
+            p = player_lookup.get(h.house_id)
+            char_name = p.character.name if p and p.character else None
+            h_name = h.name.replace("[", "").replace("]", "")
+            return f"**{char_name}** ({h_name})" if char_name else f"**House {h_name}**"
+
+        # --- DATA PROCESSING ---
+        yearly_revenue = {h.house_id: 0 for h in houses}
+        # Group transactions: { "Region Name": [lines...] }
+        regional_reports = {}
+
+        # 3. Process Fief Income & Manpower
         for house in houses:
-            house_income = 0
-
-            # FIX #1: Filter fiefs for manpower calculation to exclude ruins
             active_fiefs = [f for f in house.fiefs if not f.is_ruined]
 
-            # Manpower Regen
-            manpower_cap = sum(f.base_manpower for f in active_fiefs)
-            primary_region = active_fiefs[0].region if active_fiefs else None
-            regen_rate = REPOPULATION_RATES.get(primary_region, DEFAULT_REGEN)
-            regen_amount = int(manpower_cap * regen_rate)
-            house.manpower = min(manpower_cap, house.manpower + regen_amount)
-            house.manpower_cap = manpower_cap
+            # Manpower
+            if active_fiefs:
+                m_cap = sum(f.base_manpower for f in active_fiefs)
+                region = active_fiefs[0].region
+                rate = REPOPULATION_RATES.get(region, 0.05)  # Default 5%
+                house.manpower = min(m_cap, house.manpower + int(m_cap * rate))
+                house.manpower_cap = m_cap
 
-            # Gold Income
-            for (
-                f
-            ) in (
-                house.fiefs
-            ):  # Iterate over all to increase integration, but only add income if not ruined
-
-                # FIX #2: Only add income if the fief is not ruined
+            # Income
+            fief_income = 0
+            for f in house.fiefs:
                 if not f.is_ruined:
-                    real_income = int(f.base_income * f.integration)
-                    house_income += real_income
-
-                # Recovery Logic: Increase integration by 25% per year, max 1.0
-                # This should run on all fiefs, even ruined ones, to allow them to recover if they are ever repaired.
+                    fief_income += int(f.base_income * f.integration)
                 if f.integration < 1.0:
                     f.integration = min(1.0, f.integration + 0.25)
 
-            gross_incomes[house.house_id] = house_income
-            house.treasury += house_income
+            house.treasury += fief_income
+            yearly_revenue[house.house_id] = fief_income
 
-        # 3. Process Taxes (Dynamic Rate)
-        for house in sorted(houses, key=lambda h: h.name):
-            if not house.liege_id:
-                continue
+        # 4. Process Tax Flow
+        taxable_houses = [h for h in houses if h.liege_id and h.paying_taxes]
+        # Feudal sort: Vassals pay Heirs, Heirs pay Kings
+        taxable_houses.sort(
+            key=lambda h: (
+                house_map.get(h.liege_id).liege_id is not None
+                if house_map.get(h.liege_id)
+                else False
+            )
+        )
 
+        for house in taxable_houses:
             liege = house_map.get(house.liege_id)
             if not liege:
                 continue
 
-            # Rebellion Check
-            if not house.paying_taxes:
-                transaction_lines.append(
-                    f"叛 **{house.name}** refused taxes to **{liege.name}**."
-                )
-                continue
+            rate = max(
+                0.0, min(1.0, house.tax_rate if house.tax_rate is not None else 0.10)
+            )
+            amount = int(yearly_revenue[house.house_id] * rate)
 
-            # --- DYNAMIC TAX CALCULATION ---
-            # Use house.tax_rate. Ensure it is between 0.0 and 1.0
-            rate = house.tax_rate if house.tax_rate is not None else 0.10
-            rate = max(0.0, min(1.0, rate))
+            # Determine Region
+            region_name = house.fiefs[0].region if house.fiefs else "The Realm"
+            if region_name not in regional_reports:
+                regional_reports[region_name] = []
 
-            tax_amount = int(gross_incomes.get(house.house_id, 0) * rate)
+            if amount > 0:
+                if house.treasury >= amount:
+                    house.treasury -= amount
+                    liege.treasury += amount
+                    yearly_revenue[liege.house_id] += amount
 
-            if tax_amount > 0:
-                if house.treasury >= tax_amount:
-                    house.treasury -= tax_amount
-                    liege.treasury += tax_amount
-
-                    transaction_lines.append(
-                        f"💸 **{house.name}** paid **{tax_amount}** ({int(rate*100)}%) to **{liege.name}**."
+                    regional_reports[region_name].append(
+                        f"  💸 {get_name(house)} ➔ {get_name(liege)}: `{amount}g`"
                     )
                 else:
-                    transaction_lines.append(
-                        f"⚠️ **{house.name}** (Debt) failed to pay **{tax_amount}** to **{liege.name}**."
+                    regional_reports[region_name].append(
+                        f"  ⚠️ {get_name(house)}: **In Arrears** (Debt to {get_name(liege)})"
                     )
 
         await self.session.commit()
 
-        # 4. Chunking Logic (Pagination)
-        header = "**__Fiscal Year Report__**\n✅ Income collected based on Integration.\n✅ Integration updated (+25%).\n✅ Taxes deducted based on set rates.\n"
+        # 5. Build Formatted Report Pages
+        header = (
+            "## 📜 Royal Fiscal Report\n"
+            "*Taxes collected and integration restored across the Seven Kingdoms.*\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+        )
 
-        if not transaction_lines:
-            return [header + "\n*No taxes exchanged this year.*"]
+        if not regional_reports:
+            return [header + "\n*Peace reigns; no taxes were exchanged this year.*"]
 
+        # Sort regions alphabetically for consistency
+        sorted_regions = sorted(regional_reports.keys())
+
+        content_lines = []
+        for region in sorted_regions:
+            lines = regional_reports[region]
+            if not lines:
+                continue
+
+            content_lines.append(f"### 🚩 {region.upper()}")
+            content_lines.extend(lines)
+            content_lines.append("")  # Spacer
+
+        # 6. Pagination (Discord 2000 char limit)
         pages = []
-        chunk_size = 15
+        current_page = header
 
-        for i in range(0, len(transaction_lines), chunk_size):
-            lines = transaction_lines[i : i + chunk_size]
-            content = "\n".join(lines)
-            if i == 0:
-                content = header + content
-            pages.append(content)
+        for line in content_lines:
+            if len(current_page) + len(line) > 1900:
+                pages.append(current_page)
+                current_page = ""
+            current_page += line + "\n"
 
+        pages.append(current_page)
         return pages
 
     async def calculate_tax_income_for_house(
         self, liege_house_id: int
     ) -> tuple[list, int]:
         """
-        Calculates the projected tax income for a liege from all their direct vassals.
-        This version correctly ignores income from ruined fiefs.
+        Predicts how much tax a Lord will get.
+        Shows actual names instead of IDs.
         """
-        # 1. Find all direct vassals of the specified liege
         stmt = (
             select(House)
             .where(House.liege_id == liege_house_id)
-            .options(
-                selectinload(House.fiefs)
-            )  # Eagerly load fiefs to calculate income
+            .options(selectinload(House.fiefs))
         )
         vassals = (await self.session.execute(stmt)).scalars().all()
 
-        if not vassals:
-            return [], 0
-
-        total_tax_income = 0
-        vassal_reports = []
-
-        # 2. Iterate through each vassal to calculate their tax contribution
-        for vassal in vassals:
-            # FIX #3: Calculate gross income only from non-ruined lands
-            gross_income = sum(
-                int(f.base_income * f.integration)
-                for f in vassal.fiefs
-                if not f.is_ruined
+        total = 0
+        reports = []
+        for v in vassals:
+            # Calculate what they make from land
+            gross = sum(
+                int(f.base_income * f.integration) for f in v.fiefs if not f.is_ruined
             )
+            rate = max(0.0, min(1.0, v.tax_rate if v.tax_rate is not None else 0.10))
+            tax = int(gross * rate)
+            total += tax
+            reports.append((v.name.replace("[", "").replace("]", ""), gross, rate, tax))
 
-            # Determine the tax rate. Use the specific rate set for the vassal, or a default of 10%
-            rate = vassal.tax_rate if vassal.tax_rate is not None else 0.10
-            rate = max(0.0, min(1.0, rate))  # Clamp the rate between 0% and 100%
-
-            # Calculate the final tax amount
-            tax_amount = int(gross_income * rate)
-
-            # Add this vassal's tax to the total
-            total_tax_income += tax_amount
-
-            # Store the details for the report
-            vassal_reports.append((vassal.name, gross_income, rate, tax_amount))
-
-        return vassal_reports, total_tax_income
+        return reports, total
