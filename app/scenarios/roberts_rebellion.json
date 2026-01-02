@@ -7,7 +7,6 @@
     "updates": [
         {
             "castle": "King's Landing",
-            "rename_owner_to": "Targaryen",
             "army_update": {
                 "infantry": 10000,
                 "cavalry": 1000,
@@ -15,44 +14,6 @@
                 "ships": 20
             },
             "note": "Seat of the Mad King, Aerys II Targaryen. Royal fleet and Gold Cloaks are at peak strength."
-        },
-        {
-            "castle": "Dragonstone",
-            "rename_owner_to": "Targaryen",
-            "note": "Traditional seat of the Crown Prince, Rhaegar Targaryen."
-        },
-        {
-            "castle": "Summerhall",
-            "is_ruined": true,
-            "rename_owner_to": "Targaryen",
-            "base_income": 0,
-            "note": "Remains a Targaryen holding, but has been a ruin since the great fire of 259 AC."
-        },
-        {
-            "castle": "Storm's End",
-            "note": "Seat of Lord Robert Baratheon, a primary leader of the rebellion against the crown."
-        },
-        {
-            "castle": "Griffin's Roost",
-            "note": "Held by Lord Jon Connington, a staunch Targaryen loyalist and Hand of the King."
-        },
-        {
-            "castle": "Highgarden",
-            "army_update": {
-                "infantry": 8000,
-                "cavalry": 3500,
-                "archers": 4000,
-                "ships": 10
-            },
-            "note": "House Tyrell and the Reach remain loyal to the Targaryen crown, committing their massive army to the war."
-        },
-        {
-            "castle": "Sunspear",
-            "note": "House Martell is bound to the Targaryen cause by the marriage of Princess Elia Martell to Prince Rhaegar."
-        },
-        {
-            "castle": "Casterly Rock",
-            "note": "House Lannister, under Lord Tywin, remains neutral in the opening stages of the conflict."
         }
     ]
 }

@@ -1742,7 +1742,7 @@
         "region": "The Crownlands",
         "house": "[CROWN_HEIR]",
         "castle": "Dragonstone",
-        "liege": "[CROWN_HEIR]",
+        "liege": "[CROWN]",
         "x": 1001,
         "y": 1540,
         "is_ruined": false,

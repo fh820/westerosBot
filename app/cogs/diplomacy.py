@@ -1950,6 +1950,7 @@ from app.ui.social_views import ProposalView
 from app.checks import is_in_house_channel  # Assuming is_in_house_channel is defined
 
 from app.ui.banner_view import BannerControlView
+from app.services.common import slugify
 
 
 # --- Custom GM Check (Needs to be defined outside the Cog or as a static method/helper) ---
@@ -2431,10 +2432,23 @@ class DiplomacyCog(commands.Cog):
 
             if player_vassals:
                 for pv in player_vassals:
-                    chan_name = f"{pv['house_name'].lower().replace(' ', '-')}-quarters"
-                    vassal_channel = discord.utils.get(
-                        ctx.guild.text_channels, name=chan_name
-                    )
+                    possible_channels = []
+                    if pv.get("character_name"):
+                        possible_channels.append(
+                            slugify(pv["character_name"]) + "-quarters"
+                        )
+
+                    # Clean house name (removes brackets like [CROWN_HEIR] -> crown-heir)
+                    house_slug = slugify(pv["house_name"])
+                    possible_channels.append(f"{house_slug}-quarters")
+
+                    vassal_channel = None
+                    for name in possible_channels:
+                        vassal_channel = discord.utils.get(
+                            ctx.guild.text_channels, name=name
+                        )
+                        if vassal_channel:
+                            break
 
                     embed = discord.Embed(
                         title="🦅 A Call to Arms!",
