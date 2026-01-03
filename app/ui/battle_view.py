@@ -1,5 +1,3 @@
-# In app/ui/battle_view.py
-
 import discord
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -133,18 +131,16 @@ class BattleControlView(discord.ui.View):
             )
             await interaction.channel.send(embed=round_embed)
 
-            # --- CRITICAL FIX START ---
             # Reload the battle with all relationships loaded before generating the status embed.
-            # This prevents the 'MissingGreenlet' error when accessing battle.attacker/defender.
             battle = await self._get_battle_fully_loaded(session)
-            # --- CRITICAL FIX END ---
 
             status_embed = self._generate_status_embed(battle)
             await interaction.edit_original_response(embed=status_embed, view=self)
 
             # --- HANDLE WINNER ---
             if winner:
-                final_report, _ = await service.resolve_manual_battle_aftermath(
+                # FIX: Added an extra underscore to unpack 3 values (report, guild_id, notif_data)
+                final_report, _, _ = await service.resolve_manual_battle_aftermath(
                     self.battle_id
                 )
 
@@ -195,8 +191,6 @@ class BattleControlView(discord.ui.View):
             if not battle:
                 return
 
-            # --- OPTIONAL SAFETY FIX ---
-            # Reload to ensure view doesn't crash on render
             battle = await self._get_battle_fully_loaded(session)
 
             await interaction.edit_original_response(
@@ -218,7 +212,8 @@ class BattleControlView(discord.ui.View):
 
         async with get_session() as session:
             service = BattleService(session)
-            report, _ = await service.resolve_manual_battle_aftermath(self.battle_id)
+            # FIX: Added an extra underscore to unpack 3 values
+            report, _, _ = await service.resolve_manual_battle_aftermath(self.battle_id)
 
             if report.startswith("Error"):
                 final_embed = discord.Embed(

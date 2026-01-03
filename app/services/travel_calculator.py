@@ -1,4 +1,4 @@
-REAL_SECONDS_PER_GAME_DAY = 600
+REAL_SECONDS_PER_GAME_DAY = 100
 
 BASE_SPEEDS = {
     "land": 15,  # Miles per Game Day

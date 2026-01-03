@@ -18,8 +18,26 @@ UNIT_STATS = {
     "militia": {"value": 1.0},
     "warships": {"value": 100.0},
 }
-WINNER_CASUALTY_TABLE = {0: 0.05, 1: 0.10, 2: 0.15, 3: 0.20, 4: 0.25, 5: 0.30}
-LOSER_CASUALTY_TABLE = {0: 0.45, 1: 0.50, 2: 0.55, 3: 0.60, 4: 0.65, 5: 0.70}
+
+# WINNERS: Lose more in close battles (0), lose very little in crushing victories (5)
+WINNER_CASUALTY_TABLE = {
+    0: 0.25,
+    1: 0.20,
+    2: 0.15,
+    3: 0.10,
+    4: 0.07,
+    5: 0.05,
+}
+
+# LOSERS: Lose half their army in a retreat (0), lose almost everything in a slaughter (5)
+LOSER_CASUALTY_TABLE = {
+    0: 0.40,
+    1: 0.50,
+    2: 0.60,
+    3: 0.70,
+    4: 0.80,
+    5: 0.90,
+}
 
 
 class BattleService:
@@ -385,179 +403,12 @@ class BattleService:
             {"attacker": att_losses, "defender": def_losses},
         )
 
-    # async def resolve_manual_battle_aftermath(self, battle_id: int) -> tuple[str, int]:
-    #     stmt = (
-    #         select(Battle)
-    #         .where(Battle.id == battle_id)
-    #         .options(selectinload(Battle.game), selectinload(Battle.fief))
-    #     )
-    #     battle = (await self.session.execute(stmt)).scalars().first()
-    #     if not battle:
-    #         return "Error: Battle not found.", None
-
-    #     guild_id = battle.game.guild_id
-
-    #     stmt_armies = (
-    #         select(Army)
-    #         .where(Army.army_id.in_([battle.attacker_id, battle.defender_id]))
-    #         .options(selectinload(Army.house))
-    #     )
-    #     armies = (await self.session.execute(stmt_armies)).scalars().all()
-    #     attacker_army = next(
-    #         (a for a in armies if a.army_id == battle.attacker_id), None
-    #     )
-    #     defender_army = next(
-    #         (a for a in armies if a.army_id == battle.defender_id), None
-    #     )
-
-    #     if not attacker_army or not defender_army:
-    #         return "Error: One or both armies missing from DB.", guild_id
-
-    #     if battle.attacker_score >= battle.defender_score:
-    #         winner, loser = attacker_army, defender_army
-    #     else:
-    #         winner, loser = defender_army, attacker_army
-
-    #     attacker_snapshot = {
-    #         "initial_units": battle.att_start_count,
-    #         "initial_cargo": getattr(battle, "att_start_cargo_count", 0),
-    #         "name": attacker_army.commander_name,
-    #         "house": attacker_army.house.name if attacker_army.house else "Unknown",
-    #     }
-    #     defender_snapshot = {
-    #         "initial_units": battle.def_start_count,
-    #         "initial_cargo": getattr(battle, "def_start_cargo_count", 0),
-    #         "name": defender_army.commander_name,
-    #         "house": defender_army.house.name if defender_army.house else "Unknown",
-    #     }
-
-    #     self._stop_movement_immediately(loser)
-    #     self._stop_movement_immediately(winner)
-
-    #     commander_fate_str = ""
-    #     is_destroyed = False
-    #     # --- START OF FIX ---
-    #     # Check for the specific case where an attacker wins a siege.
-    #     is_siege_victory = battle.battle_type == "SIEGE" and winner == attacker_army
-
-    #     if is_siege_victory:
-    #         # The defending garrison cannot retreat; it is overrun.
-    #         is_destroyed = True
-    #         loser_mention = f"**{loser.house.name}**"
-    #         commander_fate_str = f"The defending garrison was overrun! The remaining forces were killed or captured."
-    #     else:
-    #         # This is for all other cases (field battles, defender winning a siege, etc.)
-    #         loser_mention = f"**{loser.house.name}**"
-    #         try:
-    #             stmt_user = (
-    #                 select(User.discord_id)
-    #                 .join(GamePlayer, GamePlayer.user_id == User.user_id)
-    #                 .where(
-    #                     GamePlayer.game_id == battle.game_id,
-    #                     GamePlayer.claimed_house_id == loser.house_id,
-    #                 )
-    #             )
-    #             discord_id = (await self.session.execute(stmt_user)).scalar()
-    #             if discord_id:
-    #                 loser_mention = f"<@{discord_id}>"
-    #         except:
-    #             pass
-
-    #         if loser.troop_count > 0:
-    #             loser_martial = await self._get_character_martial(
-    #                 loser.house_id, loser.commander_name
-    #             )
-    #             retreat_odds = 40 + (loser_martial * 2)
-    #             if random.randint(1, 100) <= retreat_odds:
-    #                 is_destroyed = False
-    #                 loser.status = "RETREATING"
-    #                 unit_term = "ships" if loser.army_type == "SEA" else "troops"
-    #                 commander_fate_str = f"**{loser.commander_name}** managed to disengage! The remaining {loser.troop_count} {unit_term} have scattered (Status: **RETREATING**).\n⚠️ {loser_mention} **ACTION REQUIRED:** You must manually move them to safety."
-    #             else:
-    #                 is_destroyed = True
-    #                 fate_str = (
-    #                     "Captured"
-    #                     if random.randint(1, 100) <= 50
-    #                     else "Killed in Action"
-    #                 )
-    #                 commander_fate_str = f"The retreat failed! **{loser.commander_name}** was **{fate_str}**! {loser_mention}, your forces were lost."
-    #         else:
-    #             is_destroyed = True
-    #             commander_fate_str = f"The force was completely destroyed! **{loser.commander_name}** was **Killed in Action**!"
-    #     # --- END OF FIX ---
-
-    #     if is_destroyed:
-    #         # This logic now correctly applies to the overrun garrison as well
-    #         prisoner_count = loser.troop_count
-    #         if winner:
-    #             if not winner.cargo:
-    #                 winner.cargo = {}
-    #             if "prisoners" not in winner.cargo:
-    #                 winner.cargo["prisoners"] = []
-    #             winner.cargo["prisoners"].append(
-    #                 {"house": loser.house.name, "count": prisoner_count}
-    #             )
-    #             flag_modified(winner, "cargo")
-    #         loser.troop_count = 0
-
-    #     loot = loser.treasury
-    #     if winner.house:
-    #         w_house = await self.session.get(House, winner.house_id)
-    #         if w_house:
-    #             w_house.treasury += loot
-    #     loser.treasury = 0
-
-    #     def generate_bd(snapshot, current_army, destroyed_flag):
-    #         survivors = 0 if destroyed_flag else current_army.troop_count
-    #         lines = [f"**Survivors:** {survivors}/{snapshot['initial_units']}"]
-    #         if snapshot["initial_cargo"] > 0:
-    #             curr_c = (
-    #                 current_army.cargo.get("troop_count", 0)
-    #                 if current_army and current_army.cargo and not destroyed_flag
-    #                 else 0
-    #             )
-    #             lines.append(f"📦 **Cargo:** {curr_c}/{snapshot['initial_cargo']}")
-    #         return "\n".join(lines)
-
-    #     att_destroyed = (attacker_army == loser) and is_destroyed
-    #     def_destroyed = (defender_army == loser) and is_destroyed
-    #     att_bd = generate_bd(attacker_snapshot, attacker_army, att_destroyed)
-    #     def_bd = generate_bd(defender_snapshot, defender_army, def_destroyed)
-    #     win_name = winner.commander_name
-
-    #     final_report = (
-    #         f"🏆 **Victor:** **{win_name}**\n\n"
-    #         f"**Attacker ({attacker_snapshot['name']})**\n{att_bd}\n\n"
-    #         f"**Defender ({defender_snapshot['name']})**\n{def_bd}\n\n"
-    #         f"💰 **Loot:** The victor seized **{loot}** Gold.\n\n"
-    #         f"**Aftermath:**\n{commander_fate_str}"
-    #     )
-
-    #     # This part of the logic remains the same.
-    #     try:
-    #         if not is_siege_victory:
-    #             if not is_destroyed:
-    #                 await self.session.delete(battle)
-    #             if is_destroyed:
-    #                 await self.session.delete(loser)
-    #                 await self.session.delete(battle)
-    #         else:
-    #             final_report += "\n\n(🏰 **Siege Ended!** Use `!resolve_siege [ID]` to finalize and announce results.)"
-
-    #         await self.session.commit()
-    #     except Exception as e:
-    #         await self.session.rollback()
-    #         print(f"[BATTLE] Critical Error during aftermath commit: {e}")
-    #         return f"Error processing battle results: {e}", guild_id
-
-    #     return final_report, guild_id
-
     async def resolve_manual_battle_aftermath(
         self, battle_id: int
     ) -> tuple[str, int, dict]:
         """
         Resolves the final state of a battle.
-        Returns: (final_report, guild_id, notification_data)
+        Applies heavy rout casualties based on victory intensity before handling fate.
         """
         stmt = (
             select(Battle)
@@ -589,10 +440,12 @@ class BattleService:
         # 1. Determine Winner and Loser
         if battle.attacker_score >= battle.defender_score:
             winner, loser = attacker_army, defender_army
+            loser_score = battle.defender_score
         else:
             winner, loser = defender_army, attacker_army
+            loser_score = battle.attacker_score
 
-        # 2. Snapshot Initial States (Safe for old records)
+        # 2. Snapshot Initial States
         attacker_snapshot = {
             "initial_units": battle.att_start_count,
             "initial_cargo": getattr(battle, "att_start_cargo_count", 0),
@@ -609,6 +462,70 @@ class BattleService:
         # 3. Halt all movement
         self._stop_movement_immediately(loser)
         self._stop_movement_immediately(winner)
+
+        # ====================================================================
+        # === NEW: HEAVY ROUT CASUALTIES (The fix for light losses) ==========
+        # ====================================================================
+
+        # Calculate victory intensity (Index 0-5)
+        # 5 minus the points the loser managed to get.
+        # (e.g., 5-0 victory = Index 5, 5-4 victory = Index 1)
+        score_index = max(0, min(5, 5 - loser_score))
+
+        # Pull percentages from your config tables
+        # If your WINNER_CASUALTY_TABLE yields high losses for high index,
+        # consider swapping its values so Crushing Victories = Low Winner losses.
+        win_pct = WINNER_CASUALTY_TABLE.get(score_index, 0.05)
+        los_pct = LOSER_CASUALTY_TABLE.get(score_index, 0.45)
+
+        def apply_rout_losses(army, loss_pct, is_loser):
+            if army.troop_count <= 0:
+                return 0
+
+            units_lost = int(army.troop_count * loss_pct)
+
+            # Ensure the loser always loses at least 1 unit if any remain
+            if is_loser and units_lost == 0 and army.troop_count > 0:
+                units_lost = 1
+
+            units_lost = min(units_lost, army.troop_count)
+
+            # Cargo Proportional Loss (SEA)
+            if (
+                army.army_type == "SEA"
+                and army.cargo
+                and army.cargo.get("troop_count", 0) > 0
+            ):
+                initial_ships = army.troop_count
+                survival_rate = (
+                    (initial_ships - units_lost) / initial_ships
+                    if initial_ships > 0
+                    else 0
+                )
+
+                old_cargo_count = army.cargo["troop_count"]
+                new_cargo_count = int(old_cargo_count * survival_rate)
+
+                if new_cargo_count < old_cargo_count:
+                    c_comp, _ = ArmyRepo._calculate_split(
+                        army.cargo.get("composition", {}),
+                        new_cargo_count,
+                        old_cargo_count,
+                    )
+                    # Use a copy to avoid mutation issues
+                    new_cargo_obj = dict(army.cargo)
+                    new_cargo_obj["troop_count"] = new_cargo_count
+                    new_cargo_obj["composition"] = c_comp
+                    army.cargo = new_cargo_obj
+                    flag_modified(army, "cargo")
+
+            army.troop_count -= units_lost
+            return units_lost
+
+        # Execute the rout
+        apply_rout_losses(winner, win_pct, False)
+        apply_rout_losses(loser, los_pct, True)
+        # ====================================================================
 
         commander_fate_str = ""
         is_destroyed = False
@@ -628,11 +545,10 @@ class BattleService:
             f"<@{loser_data.discord_id}>" if loser_data else f"**{loser.house.name}**"
         )
 
-        # 5. Handle Fate (Overrun vs Retreat)
+        # 5. Handle Fate (The logic now uses the already-reduced troop counts)
         if is_siege_victory:
-            # Garrisons cannot retreat from a captured castle
             is_destroyed = True
-            commander_fate_str = f"The garrison of **{battle.fief.name}** was overrun! survivors were put to the sword or captured."
+            commander_fate_str = f"The garrison of **{battle.fief.name}** was overrun! Survivors were put to the sword or captured."
         else:
             if loser.troop_count > 0:
                 loser_martial = await self._get_character_martial(
@@ -714,13 +630,12 @@ class BattleService:
                     await self.session.delete(loser)
             else:
                 final_report += "\n\n(🏰 **Siege Ended!** Use `!resolve_siege [ID]` to finalize results.)"
-
             await self.session.commit()
         except Exception as e:
             await self.session.rollback()
             return f"Error processing battle: {e}", guild_id, {}
 
-        # 9. Meta-data for Cog (Notification logic)
+        # 9. Meta-data for Cog
         notif_data = {
             "loser_discord_id": loser_data.discord_id if loser_data else None,
             "loser_channel_id": loser_data.private_channel_id if loser_data else None,
