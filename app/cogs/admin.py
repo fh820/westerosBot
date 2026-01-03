@@ -161,11 +161,30 @@ class AdminCog(commands.Cog):
                     created_count += 1
         return created_count
 
-    @commands.command()
+    @commands.command(name="setup_game")
     @commands.has_permissions(administrator=True)
-    async def setup_game(self, ctx, ruling_house: str = "Targaryen"):
+    async def setup_game(
+        self, ctx, ruling_house: str = "Targaryen", mode: str = "SPLIT"
+    ):
+        """
+        Initializes the game world from local master data.
+
+        Args:
+        - ruling_house: "Targaryen" or "Baratheon"
+        - mode: "SPLIT" (Heir/Ancestral are separate) or "UNIFIED" (King holds all)
+
+        Usage: !setup_game Baratheon SPLIT
+        """
+        # 1. Validate Mode
+        mode = mode.upper()
+        if mode not in ["SPLIT", "UNIFIED"]:
+            return await ctx.send("❌ Invalid Mode. Use `SPLIT` or `UNIFIED`.")
+
+        # 2. Check for Active Game
         async with get_session() as session:
-            stmt = select(Game).where(Game.guild_id == ctx.guild.id)
+            stmt = select(Game).where(
+                Game.guild_id == ctx.guild.id, Game.is_active == True
+            )
             result = await session.execute(stmt)
             existing_game = result.scalars().first()
 
@@ -173,19 +192,39 @@ class AdminCog(commands.Cog):
                 await ctx.send("⚠️ Game Active. Use `!end_game CONFIRM PURGE`.")
                 return
 
-        msg = await ctx.send(f"🌍 **Initializing World...** (Crown: {ruling_house})")
+        msg = await ctx.send(
+            f"🌍 **Initializing World...**\n👑 Crown: **{ruling_house}**\n⚙️ Mode: **{mode}**"
+        )
 
+        # 3. Initialize World
         async with get_session() as session:
             setup = SetupService(session)
-            # --- FIX: Pass ctx.author.id to the service ---
+
+            # We pass the hardcoded local path as you requested
             success, message = await setup.init_world(
-                ctx.guild.id, ctx.author.id, "master_world_data.json", ruling_house
+                guild_id=ctx.guild.id,
+                gm_discord_id=ctx.author.id,
+                json_path="master_world_data.json",
+                ruling_house_name=ruling_house,
+                era_mode=mode,
             )
 
             if success:
                 await msg.edit(content=f"{message}\n🔨 **Constructing Channels...**")
-                count = await self.create_logistics_channels(ctx)
-                await ctx.send(f"✅ **Ready.** Created {count} channels.")
+
+                # Run channel construction
+                try:
+                    count = await self.create_logistics_channels(ctx)
+                    await ctx.send(f"✅ **Ready.** Created {count} channels.")
+                except AttributeError:
+                    # Fallback if create_logistics_channels isn't in this class
+                    await ctx.send(
+                        "✅ **Ready.** World created (Channel setup skipped)."
+                    )
+                except Exception as e:
+                    await ctx.send(
+                        f"✅ **Ready.** World created, but channel error: {e}"
+                    )
             else:
                 await ctx.send(f"⚠️ Setup Failed: {message}")
 

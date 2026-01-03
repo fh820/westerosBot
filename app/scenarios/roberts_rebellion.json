@@ -3,17 +3,5 @@
         "name": "Robert's Rebellion",
         "year": 282,
         "description": "The war to overthrow the Targaryen dynasty, led by a coalition of great houses."
-    },
-    "updates": [
-        {
-            "castle": "King's Landing",
-            "army_update": {
-                "infantry": 10000,
-                "cavalry": 1000,
-                "archers": 2000,
-                "ships": 20
-            },
-            "note": "Seat of the Mad King, Aerys II Targaryen. Royal fleet and Gold Cloaks are at peak strength."
-        }
-    ]
+    }
 }
