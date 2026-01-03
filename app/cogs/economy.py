@@ -683,6 +683,40 @@ class EconomyCog(commands.Cog):
                     )
                     await ctx.send("✅ Transfer request sent to GMs for approval.")
 
+    @commands.command(name="tax_income")
+    @commands.check(is_in_house_channel)
+    async def tax_income(self, ctx):
+        """Check your expected tax income from your vassals."""
+        async with get_session() as session:
+            house = await self._get_player_house(session, ctx)
+            if not house:
+                return await ctx.send("❌ You do not command a house.")
+
+            service = EconomyService(session)
+            vassals, total_tax = await service.calculate_tax_income_for_house(
+                house.house_id
+            )
+
+            if not vassals:
+                return await ctx.send(
+                    f"You do not have any vassals to collect taxes from."
+                )
+
+            embed = discord.Embed(
+                title=f"Tax Income for House {house.name}",
+                description="An overview of the expected income from your vassals at the end of the year.",
+                color=discord.Color.gold(),
+            )
+            report_lines = []
+            for v_name, v_income, v_rate, tax_val in vassals:
+                report_lines.append(
+                    f"▫️ **{v_name}**: {v_income} Gold * {int(v_rate*100)}% = **{tax_val} Gold**"
+                )
+
+            embed.description = "\n".join(report_lines)
+            embed.set_footer(text=f"Total Expected Tax Income: {total_tax} Gold")
+            await ctx.send(embed=embed)
+
     # --- 3. GM ECONOMY COMMANDS ---
 
     @commands.group(name="gm_econ", invoke_without_command=True)

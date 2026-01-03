@@ -67,8 +67,7 @@ class EconomyService:
 
     async def run_fiscal_year(self, game_id: int) -> list[str]:
         """
-        The heavy lifter. Updates manpower, processes fief income,
-        and moves tax gold up the feudal ladder.
+        Debug Version: detect_cycles_before_running
         """
         # 1. Load Data
         stmt_houses = (
@@ -78,6 +77,52 @@ class EconomyService:
         )
         houses = (await self.session.execute(stmt_houses)).scalars().all()
         house_map = {h.house_id: h for h in houses}
+
+        # =========================================================
+        # 🕵️ DEBUG: PRE-FLIGHT CYCLE DETECTION
+        # =========================================================
+        detected_cycles = []
+
+        # We check the chain for every house to ensure no infinite loops exist
+        for h in houses:
+            current_chain_ids = set()
+            path_names = []
+
+            curr = h
+            # Traverse up the tree
+            while curr.liege_id and curr.liege_id in house_map:
+                # 1. Check if we have been here before in this specific chain
+                if curr.house_id in current_chain_ids:
+                    # CYCLE FOUND!
+                    path_names.append(f"**{curr.name}** (ID {curr.house_id}) 🔄")
+                    detected_cycles.append(" -> ".join(path_names))
+                    break
+
+                # 2. Add to history and move up
+                current_chain_ids.add(curr.house_id)
+                path_names.append(f"{curr.name} ({curr.house_id})")
+
+                # Move to the liege
+                curr = house_map[curr.liege_id]
+
+                # 3. Check for immediate self-reference (House is its own Liege)
+                if curr.house_id in current_chain_ids:
+                    path_names.append(f"**{curr.name}** (ID {curr.house_id}) 🔄")
+                    detected_cycles.append(" -> ".join(path_names))
+                    break
+
+        if detected_cycles:
+            # Remove duplicates (since A->B is the same loop as B->A)
+            unique_cycles = list(set(detected_cycles))
+            error_msg = "❌ **CRITICAL DATA ERROR: FEUDAL LOOPS DETECTED**\nThe fiscal year cannot run because the following houses are stuck in infinite loops:\n\n"
+            for cycle in unique_cycles[:10]:  # Limit to 10 to prevent spam
+                error_msg += f"🔸 {cycle}\n"
+
+            error_msg += "\n**Solution:** Use SQL to set one of these houses' `liege_id` to NULL or a valid King."
+            return [error_msg]
+        # =========================================================
+        # END DEBUG SECTION
+        # =========================================================
 
         # Identify players for the report naming
         stmt_players = (
@@ -129,8 +174,8 @@ class EconomyService:
             yearly_revenue[house.house_id] = fief_income
 
         # 3. STEP TWO: Tax Flow (Bottom-Up Logic)
-        # We process houses with NO vassals first, then their lieges, then kings.
-        # This ensures gold flows up properly in a single pass.
+
+        # Standard recursive depth (safe now because we checked for cycles above)
         def get_feudal_depth(h, depth=0):
             if not h.liege_id or h.liege_id not in house_map:
                 return depth

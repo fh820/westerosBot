@@ -552,11 +552,7 @@ class DiplomacyService:
 
             # Now try the filtered query
             main_fleet = next(
-                (
-                    f
-                    for f in all_fleets
-                    if f.status in ["IDLE", "DOCKED", "GARRISONED", "STATIONED"]
-                ),
+                (f for f in all_fleets if f.status in ["GARRISONED"]),
                 None,
             )
 
@@ -774,10 +770,11 @@ class DiplomacyService:
         is_gm_override: bool = False,
     ):
         """
-        Updates the liege_id of a house. Now supports GM override.
+        Updates the liege_id of a house. Supports 'None' for independence.
         """
         vassal_house: House | None = None
 
+        # 1. Identify the Vassal House
         if is_gm_override and vassal_house_id is not None:
             vassal_house = await self.session.get(House, vassal_house_id)
             if not vassal_house:
@@ -794,6 +791,20 @@ class DiplomacyService:
         else:
             return False, "❌ No vassal house identified."
 
+        # --- NEW: Check for Independence Keywords ---
+        if new_liege_name.lower() in ["none", "null", "independent", "self"]:
+            if vassal_house.liege_id is None:
+                return False, f"ℹ️ House **{vassal_house.name}** is already independent."
+
+            vassal_house.liege_id = None
+            await self.session.commit()
+            return (
+                True,
+                f"👑 **Declaration of Independence:** House **{vassal_house.name}** recognizes no King but the King in the North (or themselves)!",
+            )
+        # ---------------------------------------------
+
+        # 2. Find the New Liege
         stmt_l = select(House).where(
             House.game_id == game_id, House.name.ilike(new_liege_name)
         )
@@ -801,14 +812,25 @@ class DiplomacyService:
 
         if not liege_house:
             return False, f"❌ House **{new_liege_name}** not found."
+
+        # 3. Validation Checks
         if liege_house.house_id == vassal_house.house_id:
             return False, "❌ A house cannot swear fealty to itself."
+
+        # Prevent Circular Dependency (Simple Check)
+        if liege_house.liege_id == vassal_house.house_id:
+            return (
+                False,
+                f"❌ House **{liege_house.name}** is currently YOUR vassal. They must declare independence first.",
+            )
+
         if vassal_house.liege_id == liege_house.house_id:
             return (
                 False,
                 f"ℹ️ **House {vassal_house.name}** already bends the knee to **{liege_house.name}**.",
             )
 
+        # 4. Update
         vassal_house.liege_id = liege_house.house_id
         await self.session.commit()
         return (
