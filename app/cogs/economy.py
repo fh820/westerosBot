@@ -1,281 +1,3 @@
-# import discord
-# from discord.ext import commands
-# from sqlalchemy import select
-# from app.db.db_manager import get_session, get_session
-# from app.db.models import House, Game, GamePlayer, User
-# from app.services.economy import EconomyService
-# from app.db.repositories import GameRepo
-# from app.checks import is_in_house_channel
-
-
-# class EconomyCog(commands.Cog):
-#     def __init__(self, bot):
-#         self.bot = bot
-
-#     @commands.command()
-#     async def crown_transfer(self, ctx, target: discord.Member, amount: int):
-#         """
-#         Master of Coin Only: Transfer money from the Crown to someone.
-#         """
-#         moc_role = discord.utils.get(ctx.guild.roles, name="Master of Coin")
-#         if (
-#             not moc_role or moc_role not in ctx.author.roles
-#         ) and not ctx.author.guild_permissions.administrator:
-#             await ctx.send("❌ You are not the Master of Coin.")
-#             return
-
-#         async with get_session() as session:
-#             stmt_game = select(Game).where(
-#                 Game.guild_id == ctx.guild.id, Game.is_active == True
-#             )
-#             game = (await session.execute(stmt_game)).scalars().first()
-#             if not game:
-#                 await ctx.send("❌ No active game.")
-#                 return
-
-#             crown_house_name = game.ruling_house
-#             stmt_house = select(House).where(
-#                 House.game_id == game.game_id, House.name == crown_house_name
-#             )
-#             crown_house = (await session.execute(stmt_house)).scalars().first()
-
-#             if not crown_house:
-#                 await ctx.send(
-#                     f"❌ Ruling House **{crown_house_name}** not found in DB."
-#                 )
-#                 return
-
-#             if crown_house.treasury < amount:
-#                 await ctx.send(
-#                     f"❌ The Crown is in debt! Treasury: {crown_house.treasury}"
-#                 )
-#                 return
-
-#             stmt_target = (
-#                 select(House)
-#                 .join(GamePlayer)
-#                 .join(User)
-#                 .where(User.discord_id == target.id, House.game_id == game.game_id)
-#             )
-#             target_house = (await session.execute(stmt_target)).scalars().first()
-
-#             if not target_house:
-#                 await ctx.send(
-#                     f"❌ {target.mention} does not control a House or Faction."
-#                 )
-#                 return
-
-#             crown_house.treasury -= amount
-#             target_house.treasury += amount
-#             await session.commit()
-
-#             await ctx.send(
-#                 f"💸 **The Crown** transfers **{amount} gold** to **{target_house.name}** ({target.mention})."
-#             )
-
-#     # --- THE FIX: Un-indent these two commands ---
-
-#     # @commands.command(name="year_end")
-#     # @commands.has_permissions(administrator=True)
-#     # async def year_end(self, ctx):
-#     #     """
-#     #     GM Tool: Triggers the fiscal year (Income + Taxes).
-#     #     """
-#     #     msg = await ctx.send(
-#     #         "💰 **Calculating Fiscal Year...** This may take a moment."
-#     #     )
-
-#     #     async with get_session() as session:
-#     #         game = await GameRepo.get_active_game(session, ctx.guild.id)
-#     #         if not game:
-#     #             await msg.edit(content="❌ No active game.")
-#     #             return
-
-#     #         service = EconomyService(session)
-#     #         # 'report_pages' is now a LIST of strings
-#     #         report_pages = await service.run_fiscal_year(game.game_id)
-
-#     #         # Increment Year
-#     #         game.current_year += 1
-#     #         await session.commit()
-
-#     #         # --- PAGINATION SENDING LOGIC ---
-#     #         await msg.edit(content=f"📅 **Year {game.current_year} Begins!**")
-
-#     #         # Send each page as a separate message
-#     #         for page in report_pages:
-#     #             if page:  # Avoid sending empty pages
-#     #                 await ctx.send(page)
-
-#     #         await ctx.send("✅ Fiscal year complete.")
-#     #         break
-
-#     @commands.command(name="year_end")
-#     @commands.has_permissions(administrator=True)
-#     async def year_end(self, ctx):
-#         """
-#         GM Tool: Triggers the fiscal year.
-#         """
-#         # Initial status message
-#         status_msg = await ctx.send(
-#             "💰 **Calculating Fiscal Year (Income, Integration, Taxes)...**"
-#         )
-
-#         async with get_session() as session:
-#             game = await GameRepo.get_active_game(session, ctx.guild.id)
-#             if not game:
-#                 return
-
-#             from app.services.economy import EconomyService
-
-#             service = EconomyService(session)
-
-#             # Get the list of report pages
-#             report_pages = await service.run_fiscal_year(game.game_id)
-
-#             # Increment Year
-#             game.current_year += 1
-#             await session.commit()
-
-#             # Delete status message
-#             await status_msg.delete()
-
-#             # Send header
-#             await ctx.send(f"📅 **Year {game.current_year} Begins!**")
-
-#             # Send pages
-#             for page in report_pages:
-#                 # Wrap in code block or embed if desired, but plain text avoids limits best for logs
-#                 if len(page) > 2000:
-#                     # Failsafe split if a single page is somehow too huge
-#                     await ctx.send(page[:2000])
-#                     await ctx.send(page[2000:])
-#                 else:
-#                     await ctx.send(page)
-
-#     @commands.command(name="stop_tax")
-#     @commands.check(is_in_house_channel)
-#     async def stop_tax(self, ctx):
-#         """Toggle paying taxes to your liege."""
-#         async with get_session() as session:
-#             stmt = (
-#                 select(House)
-#                 .join(GamePlayer)
-#                 .join(User)
-#                 .where(User.discord_id == ctx.author.id)
-#             )
-#             house = (await session.execute(stmt)).scalars().first()
-
-#             if not house:
-#                 return
-
-#             house.paying_taxes = not house.paying_taxes
-#             await session.commit()
-
-#             status = "RESUMED" if house.paying_taxes else "STOPPED"
-#             await ctx.send(
-#                 f"💸 **Tax Status Updated:** You have **{status}** paying taxes to your liege."
-#             )
-
-#     @commands.command(name="punish")
-#     @commands.has_permissions(administrator=True)
-#     async def punish_desertion(self, ctx, house_name: str, percent: int):
-#         """
-#         Removes X% of troops from ALL armies of a house due to desertion.
-#         Usage: !punish Stark 10
-#         """
-#         if not (1 <= percent <= 100):
-#             return await ctx.send("❌ Percent must be 1-100.")
-
-#         async with get_session() as session:
-#             game = await GameRepo.get_active_game(session, ctx.guild.id)
-
-#             # Find House
-#             from app.db.models import House, Army
-
-#             stmt = select(House).where(
-#                 House.name.ilike(house_name), House.game_id == game.game_id
-#             )
-#             house = (await session.execute(stmt)).scalars().first()
-#             if not house:
-#                 return await ctx.send("❌ House not found.")
-
-#             # Find Armies
-#             stmt_a = select(Army).where(Army.house_id == house.house_id)
-#             armies = (await session.execute(stmt_a)).scalars().all()
-
-#             total_lost = 0
-#             ratio = 1.0 - (percent / 100.0)
-
-#             for army in armies:
-#                 old_count = army.troop_count
-#                 new_count = int(old_count * ratio)
-#                 loss = old_count - new_count
-
-#                 # Apply composition reduction logic (from ArmyRepo)
-#                 from app.db.repositories import ArmyRepo
-
-#                 new_comp, _ = ArmyRepo._calculate_split(
-#                     army.composition, new_count, old_count
-#                 )
-
-#                 army.troop_count = new_count
-#                 army.composition = new_comp
-#                 total_lost += loss
-
-#             await session.commit()
-#             await ctx.send(
-#                 f"📉 **Desertion:** House {house.name} has lost **{total_lost}** men ({percent}%)."
-#             )
-
-#     @commands.command(name="loot")
-#     @commands.has_permissions(administrator=True)
-#     async def loot(self, ctx, amount: int, victim: str, looter: str):
-#         """
-#         Transfers gold + announces pillage.
-#         Usage: !loot 5000 Lannister Greyjoy
-#         """
-#         async with get_session() as session:
-#             game = await GameRepo.get_active_game(session, ctx.guild.id)
-
-#             # Helper to get house
-#             async def get_h(name):
-#                 s = select(House).where(
-#                     House.name.ilike(name), House.game_id == game.game_id
-#                 )
-#                 return (await session.execute(s)).scalars().first()
-
-#             vic_h = await get_h(victim)
-#             loot_h = await get_h(looter)
-
-#             if not vic_h or not loot_h:
-#                 return await ctx.send("❌ House not found.")
-
-#             # Execute
-#             vic_h.treasury -= amount
-#             loot_h.treasury += amount
-#             await session.commit()
-
-#             # Announcement
-#             news_chan = discord.utils.get(
-#                 ctx.guild.text_channels, name="news-and-events"
-#             )
-#             embed = discord.Embed(
-#                 title="🔥 City Sacked!", color=discord.Color.dark_red()
-#             )
-#             embed.description = f"**House {loot_h.name}** has raided the lands of **House {vic_h.name}**!"
-#             embed.add_field(name="Loot Taken", value=f"💰 {amount} Gold Dragons")
-
-#             if news_chan:
-#                 await news_chan.send(embed=embed)
-#             await ctx.send("✅ Loot transferred.")
-
-
-# async def setup(bot):
-#     await bot.add_cog(EconomyCog(bot))
-
-# UNCOMMENT ABOVE FROM HERE
-
 import discord
 from discord.ext import commands
 from sqlalchemy import select
@@ -285,7 +7,7 @@ from app.db.db_manager import get_session
 from app.db.models import House, Game, GamePlayer, User, Fief, Army
 from app.services.economy import EconomyService
 from app.db.repositories import GameRepo
-from app.checks import is_in_house_channel  # Assuming is_in_house_channel is defined
+from app.checks import is_in_house_channel
 
 from app.ui.economy_view import TransactionView
 from sqlalchemy.orm.attributes import flag_modified
@@ -550,76 +272,57 @@ class EconomyCog(commands.Cog):
 
     @commands.command()
     async def crown_transfer(self, ctx, target: discord.Member, amount: int):
-        """
-        Master of Coin Only: Transfer money from the KL Royal Treasury to a player's house.
-        """
+        """Master of Coin: Transfer money from the Iron Throne to a house."""
         moc_role = discord.utils.get(ctx.guild.roles, name="Master of Coin")
-        is_admin = ctx.author.guild_permissions.administrator
-
-        if not (is_admin or (moc_role and moc_role in ctx.author.roles)):
-            await ctx.send("❌ You are not the Master of Coin.")
-            return
+        if not (
+            ctx.author.guild_permissions.administrator
+            or (moc_role and moc_role in ctx.author.roles)
+        ):
+            return await ctx.send("❌ You are not the Master of Coin.")
 
         async with get_session() as session:
-            # 1. Get Active Game
-            from app.db.models import (
-                Game,
-                House,
-                Fief,
-                GamePlayer,
-                User,
-            )  # Ensure imports
-
-            stmt_game = select(Game).where(
-                Game.guild_id == ctx.guild.id, Game.is_active == True
-            )
-            game = (await session.execute(stmt_game)).scalars().first()
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
-            # 2. FIND THE ROYAL TREASURY (The house owning King's Landing)
+            # 1. Find Royal Treasury
             stmt_crown = (
                 select(House)
                 .join(Fief)
                 .where(Fief.name == "King's Landing", House.game_id == game.game_id)
             )
             crown_house = (await session.execute(stmt_crown)).scalars().first()
+            if not crown_house or crown_house.treasury < amount:
+                return await ctx.send("❌ Royal Treasury insufficient.")
 
-            if not crown_house:
-                return await ctx.send("❌ Royal Treasury (King's Landing) not found.")
-
-            if crown_house.treasury < amount:
-                return await ctx.send(
-                    f"❌ The Crown is in debt! Treasury: {crown_house.treasury}"
-                )
-
-            # 3. FIND THE TARGET PLAYER'S PRIMARY HOUSE
+            # 2. Find Target and their Locked Channel
             stmt_target = (
                 select(GamePlayer)
                 .join(User)
                 .where(User.discord_id == target.id, GamePlayer.game_id == game.game_id)
-                .options(selectinload(GamePlayer.house))  # Load the relationship
+                .options(selectinload(GamePlayer.house))
             )
             target_player = (await session.execute(stmt_target)).scalars().first()
-
             if not target_player or not target_player.house:
                 return await ctx.send(f"❌ {target.mention} does not control a House.")
 
-            target_house = target_player.house
-
-            # 4. Prevent transferring to self
-            if crown_house.house_id == target_house.house_id:
-                return await ctx.send("❌ Cannot transfer from the Crown to the Crown.")
-
-            # 5. Perform Transfer
+            # 3. Execute
             crown_house.treasury -= amount
-            target_house.treasury += amount
-
+            target_player.house.treasury += amount
             await session.commit()
 
+            # 4. Notify in Private Quarters via ID
+            if target_player.private_channel_id:
+                chan = self.bot.get_channel(target_player.private_channel_id)
+                if chan:
+                    embed = discord.Embed(
+                        title="💰 Royal Grant", color=discord.Color.gold()
+                    )
+                    embed.description = f"The Master of Coin has transferred **{amount} Gold** from the Iron Throne to your treasury."
+                    await chan.send(content=target.mention, embed=embed)
+
             await ctx.send(
-                f"💸 **The Iron Throne** ({crown_house.name}) transfers **{amount} gold** to **{target_house.name}** ({target.mention}).\n"
-                f"⚖️ **New Crown Balance:** {crown_house.treasury}"
+                f"✅ Transferred **{amount} gold** to **{target_player.house.name}**."
             )
 
     @commands.command(name="year_end")
@@ -785,32 +488,31 @@ class EconomyCog(commands.Cog):
         Usage: !check_gold [ArmyID]
         """
         async with get_session() as session:
-            # 1. Verify Player
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
-            stmt_p = select(GamePlayer).where(
-                GamePlayer.user_id
-                == select(User.user_id)
-                .where(User.discord_id == ctx.author.id)
-                .scalar_subquery(),
-                GamePlayer.game_id == game.game_id,
+            # 1. Simplified Player Lookup
+            stmt_p = (
+                select(GamePlayer)
+                .join(User)
+                .where(
+                    User.discord_id == ctx.author.id, GamePlayer.game_id == game.game_id
+                )
             )
             player = (await session.execute(stmt_p)).scalars().first()
             if not player or not player.claimed_house_id:
-                return await ctx.send("❌ You do not have a House.")
+                return await ctx.send("❌ You do not command a House.")
 
             # 2. Get Asset
             service = EconomyService(session)
             asset, gold, name = await service.get_army_gold(asset_id)
 
-            if not asset:
-                return await ctx.send("❌ Army/Fleet not found.")
-
-            # 3. Check Ownership
-            if asset.house_id != player.claimed_house_id:
-                return await ctx.send("❌ You do not own this Army/Fleet.")
+            # 3. Ownership Check
+            if not asset or asset.house_id != player.claimed_house_id:
+                return await ctx.send(
+                    "❌ You do not own this Army/Fleet or it does not exist."
+                )
 
             await ctx.send(
                 f"💰 **{name} (ID: {asset.army_id})** Treasury: **{gold} Gold**"
@@ -822,10 +524,8 @@ class EconomyCog(commands.Cog):
         self, ctx, amount: int, target_type: str, *, identifier: str
     ):
         """
-        Transfer gold from your House to an Army or another House (via Fief).
-        Usage:
-        !transfer_gold 500 army 123
-        !transfer_gold 500 fief Winterfell (Sends to Stark)
+        Transfer gold from your House to an Army or another House.
+        Requests are sent to the recipient's LOCKED private quarters.
         """
         target_type = target_type.upper()
         if target_type not in ["ARMY", "FIEF", "FLEET"]:
@@ -835,23 +535,21 @@ class EconomyCog(commands.Cog):
             return await ctx.send("❌ Amount must be positive.")
 
         async with get_session() as session:
-            # 1. Setup Source
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
+            # 1. Find Source House
             stmt_p = (
                 select(GamePlayer)
+                .join(User)
                 .where(
-                    GamePlayer.user_id
-                    == select(User.user_id)
-                    .where(User.discord_id == ctx.author.id)
-                    .scalar_subquery(),
-                    GamePlayer.game_id == game.game_id,
+                    User.discord_id == ctx.author.id, GamePlayer.game_id == game.game_id
                 )
                 .options(selectinload(GamePlayer.house))
             )
             player = (await session.execute(stmt_p)).scalars().first()
+
             if not player or not player.house:
                 return await ctx.send("❌ You have no House.")
 
@@ -862,21 +560,19 @@ class EconomyCog(commands.Cog):
                 )
 
             service = EconomyService(session)
-
-            # Variables for Transfer
-            final_target_category = ""  # "ARMY" or "HOUSE"
+            final_target_category = ""
             final_target_id = 0
             final_target_name = ""
             target_owner_id = 0
 
-            # 2. Resolve Target
+            # 2. Resolve Target (Army or Fief/House)
             if target_type in ["ARMY", "FLEET"]:
                 if not identifier.isdigit():
-                    return await ctx.send("❌ Army ID must be a number.")
+                    return await ctx.send("❌ ID must be a number.")
 
                 army, _, army_name = await service.get_army_gold(int(identifier))
                 if not army:
-                    return await ctx.send("❌ Army not found.")
+                    return await ctx.send("❌ Army/Fleet not found.")
 
                 final_target_category = "ARMY"
                 final_target_id = army.army_id
@@ -884,7 +580,6 @@ class EconomyCog(commands.Cog):
                 target_owner_id = army.house_id
 
             elif target_type == "FIEF":
-                # Find Fief -> Find Owner House -> Target is House
                 stmt_f = (
                     select(Fief)
                     .where(Fief.game_id == game.game_id, Fief.name.ilike(identifier))
@@ -892,10 +587,10 @@ class EconomyCog(commands.Cog):
                 )
                 fief = (await session.execute(stmt_f)).scalars().first()
 
-                if not fief:
-                    return await ctx.send(f"❌ Fief '{identifier}' not found.")
-                if not fief.owner:
-                    return await ctx.send(f"❌ {fief.name} has no owner.")
+                if not fief or not fief.owner:
+                    return await ctx.send(
+                        f"❌ Fief '{identifier}' not found or has no owner."
+                    )
 
                 final_target_category = "HOUSE"
                 final_target_id = fief.owner.house_id
@@ -904,10 +599,10 @@ class EconomyCog(commands.Cog):
 
             # 3. Execution Logic
             if target_owner_id == source_house.house_id:
-                # SELF TRANSFER (Instant)
+                # --- INTERNAL TRANSFER ---
                 if final_target_category == "HOUSE":
                     return await ctx.send(
-                        "❌ You cannot transfer money from your House to your House."
+                        "❌ You cannot transfer money from your House to itself."
                     )
 
                 success, msg = await service.execute_transfer(
@@ -919,43 +614,60 @@ class EconomyCog(commands.Cog):
                 await ctx.send(msg if success else f"❌ {msg}")
 
             else:
-                # EXTERNAL TRANSFER (Confirmation Required)
-                stmt_user = (
-                    select(User)
-                    .join(GamePlayer)
+                # --- EXTERNAL TRANSFER (USING LOCKED CHANNEL ID) ---
+                stmt_recip = (
+                    select(GamePlayer)
+                    .join(User)
                     .where(
                         GamePlayer.game_id == game.game_id,
                         GamePlayer.claimed_house_id == target_owner_id,
                     )
                 )
-                target_user = (await session.execute(stmt_user)).scalars().first()
+                recip_p = (await session.execute(stmt_recip)).scalars().first()
 
                 embed = discord.Embed(
                     title="💸 Incoming Transfer Request", color=discord.Color.gold()
                 )
-                embed.description = f"**{source_house.name}** wants to send **{amount} Gold** to **{final_target_name}**."
+                embed.description = f"**{source_house.name}** is sending **{amount} Gold** to **{final_target_name}**."
+                embed.set_footer(
+                    text="Click below to accept this transfer into your treasury."
+                )
 
-                if target_user and target_user.discord_id:
-                    # Player Owned
+                if recip_p:
+                    # Delivered to Recipient's Locked Quarters
+                    target_channel = self.bot.get_channel(recip_p.private_channel_id)
+
                     view = TransactionView(
                         source_house.house_id,
                         final_target_category,
                         final_target_id,
                         amount,
-                        approver_discord_id=target_user.discord_id,
+                        approver_discord_id=recip_p.user.discord_id,
                     )
-                    await ctx.send(
-                        f"⏳ Waiting for <@{target_user.discord_id}> to accept...",
-                        embed=embed,
-                        view=view,
-                    )
+
+                    if target_channel:
+                        await target_channel.send(
+                            content=f"<@{recip_p.user.discord_id}>",
+                            embed=embed,
+                            view=view,
+                        )
+                        await ctx.send(
+                            f"✅ **Request Sent:** A raven was dispatched to the private quarters of **{final_target_name}**."
+                        )
+                    else:
+                        # Fallback for players without a locked channel ID
+                        await ctx.send(
+                            f"{recip_p.user.discord_id}, a transfer is waiting for your consent.",
+                            embed=embed,
+                            view=view,
+                        )
                 else:
-                    # NPC Owned (GM)
+                    # NPC Owned (Sends to GMs)
                     gm_chan = discord.utils.get(
                         ctx.guild.text_channels, name="gm-alerts"
                     )
                     if not gm_chan:
-                        return await ctx.send("❌ GM Alerts channel missing.")
+                        return await ctx.send("❌ #gm-alerts channel missing.")
 
                     view = TransactionView(
                         source_house.house_id,
@@ -965,59 +677,50 @@ class EconomyCog(commands.Cog):
                         is_gm_approval=True,
                     )
                     await gm_chan.send(
-                        f"🔔 **NPC Interaction:** Transfer to **{final_target_name}** (NPC).",
+                        f"🔔 **NPC Interaction:** Transfer request for **{final_target_name}** (NPC).",
                         embed=embed,
                         view=view,
                     )
                     await ctx.send("✅ Transfer request sent to GMs for approval.")
 
-    # --- 3. GM COMMANDS ---
+    # --- 3. GM ECONOMY COMMANDS ---
 
     @commands.group(name="gm_econ", invoke_without_command=True)
     @commands.check(is_gm)
     async def gm_econ(self, ctx):
+        """GM Economy Hub."""
         await ctx.send(
-            "Commands: `check [id] [army/house]`, `transfer [house_id] [amount] [army/house] [target_id]`"
-        )
-
-    @commands.group(name="gm_econ", invoke_without_command=True)
-    @commands.check(is_gm)
-    async def gm_econ(self, ctx):
-        await ctx.send(
-            "Commands: `check [id/name]`, `transfer [house_id] [amount] [ARMY/HOUSE] [target_id]`"
+            "**GM Economy Subcommands:**\n"
+            "`!gm_econ check [HouseName/ID]` - Audit treasury\n"
+            "`!gm_econ transfer [FromID] [Amount] [ARMY/HOUSE] [ToID]` - Force transfer\n"
+            "`!gm_econ set_tax [House] [Percent]` - Set house contribution\n"
+            "`!gm_econ set_vassal_tax [Liege] [Percent]` - Set all vassals of a liege\n"
+            "`!gm_econ buy/sell` - Force unit management\n"
+            "`!gm_econ stop_tax [House]` - Toggle tax status"
         )
 
     @gm_econ.command(name="check")
     async def gm_check(self, ctx, *, identifier: str):
-        """
-        GM: Smart check for House or Army gold.
-        Usage:
-        !gm_econ check Tyrell  (Searches Houses)
-        !gm_econ check 3592    (Tries House ID, then Army ID)
-        """
+        """GM Audit: Checks gold for a House (name/ID) or Army (ID)."""
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
-            # 1. Try finding a HOUSE first (By Name or ID)
+            # 1. Try finding a HOUSE first
             stmt_house = select(House).where(House.game_id == game.game_id)
-
             if identifier.isdigit():
-                # If number, check ID first
                 stmt_house = stmt_house.where(House.house_id == int(identifier))
             else:
-                # If text, check Name
                 stmt_house = stmt_house.where(House.name.ilike(identifier))
 
             house = (await session.execute(stmt_house)).scalars().first()
-
             if house:
                 return await ctx.send(
                     f"🕵️ **GM Audit:** House **{house.name}** (ID: {house.house_id})\nTreasury: **{house.treasury} Gold**"
                 )
 
-            # 2. If no House found, try finding an ARMY (By ID only usually)
+            # 2. Try finding an ARMY
             if identifier.isdigit():
                 service = EconomyService(session)
                 army, gold, name = await service.get_army_gold(int(identifier))
@@ -1027,18 +730,13 @@ class EconomyCog(commands.Cog):
                         f"🕵️ **GM Audit:** Army **{name}** (ID: {army.army_id})\nOwner: {owner}\nTreasury: **{gold} Gold**"
                     )
 
-            await ctx.send(
-                f"❌ Could not find a House named '{identifier}' or a House/Army with ID '{identifier}'."
-            )
+            await ctx.send(f"❌ Could not find House or Army matching '{identifier}'.")
 
     @gm_econ.command(name="transfer")
     async def gm_transfer(
         self, ctx, source_house_id: int, amount: int, target_type: str, target_id: int
     ):
-        """
-        GM: Force transfer.
-        Usage: !gm_econ transfer [FromHouseID] [Amount] [ARMY/HOUSE] [TargetID]
-        """
+        """GM: Force transfer gold between entities."""
         target_type = target_type.upper()
         if target_type == "FLEET":
             target_type = "ARMY"
@@ -1055,23 +753,16 @@ class EconomyCog(commands.Cog):
     @commands.command(name="set_tax")
     @commands.check(is_in_house_channel)
     async def set_own_tax(self, ctx, percent: int):
-        """
-        Set the tax rate YOU are willing to pay your Liege.
-        Usage: !set_tax 5  (Sets your payment to 5%)
-        """
+        """Set the tax rate YOU are willing to pay your Liege."""
         if not (0 <= percent <= 100):
-            return await ctx.send("❌ Percentage must be between 0 and 100.")
+            return await ctx.send("❌ Percentage must be 0-100.")
 
         async with get_session() as session:
+            # Simplified Player Lookup
             stmt = (
                 select(GamePlayer)
-                .where(
-                    GamePlayer.user_id
-                    == select(User.user_id)
-                    .where(User.discord_id == ctx.author.id)
-                    .scalar_subquery(),
-                    GamePlayer.is_primary == True,
-                )
+                .join(User)
+                .where(User.discord_id == ctx.author.id, GamePlayer.is_primary == True)
                 .options(selectinload(GamePlayer.house))
             )
             player = (await session.execute(stmt)).scalars().first()
@@ -1079,11 +770,8 @@ class EconomyCog(commands.Cog):
             if not player or not player.house:
                 return await ctx.send("❌ You do not have a House.")
 
-            house = player.house
-            new_rate = percent / 100.0
-            house.tax_rate = new_rate
+            player.house.tax_rate = percent / 100.0
             await session.commit()
-
             await ctx.send(
                 f"📉 **Tax Adjustment:** You have set your contribution to your liege to **{percent}%**."
             )
@@ -1091,70 +779,48 @@ class EconomyCog(commands.Cog):
     @commands.command(name="set_vassal_tax")
     @commands.check(is_in_house_channel)
     async def set_vassal_tax(self, ctx, percent: int):
-        """
-        Set the tax rate for ALL your direct vassals.
-        Pings players in their house channels.
-        Usage: !set_vassal_tax 15
-        """
+        """Sets tax for vassals and notifies them via Locked Channel IDs."""
         if not (0 <= percent <= 100):
-            return await ctx.send("❌ Percentage must be between 0 and 100.")
+            return await ctx.send("❌ 0-100 only.")
 
         async with get_session() as session:
-            # 1. Identify Liege
             game = await GameRepo.get_active_game(session, ctx.guild.id)
-            stmt_p = (
-                select(GamePlayer)
+            liege_house = await self._get_player_house(session, ctx)
+            if not liege_house:
+                return await ctx.send("❌ No House.")
+
+            # Find Vassals AND their locked channel IDs
+            stmt_v = (
+                select(House, GamePlayer.private_channel_id)
+                .outerjoin(GamePlayer, House.house_id == GamePlayer.claimed_house_id)
                 .where(
-                    GamePlayer.user_id
-                    == select(User.user_id)
-                    .where(User.discord_id == ctx.author.id)
-                    .scalar_subquery(),
-                    GamePlayer.game_id == game.game_id,
+                    House.liege_id == liege_house.house_id,
+                    House.game_id == game.game_id,
                 )
-                .options(selectinload(GamePlayer.house))
             )
-            player = (await session.execute(stmt_p)).scalars().first()
+            vassal_results = (await session.execute(stmt_v)).all()
 
-            if not player or not player.house:
-                return await ctx.send("❌ You do not have a House.")
+            if not vassal_results:
+                return await ctx.send("❌ No vassals found.")
 
-            liege_house = player.house
             new_rate = percent / 100.0
+            for house, chan_id in vassal_results:
+                house.tax_rate = new_rate
 
-            # 2. Find Vassals
-            stmt_vassals = select(House).where(
-                House.liege_id == liege_house.house_id, House.game_id == game.game_id
-            )
-            vassals = (await session.execute(stmt_vassals)).scalars().all()
-
-            if not vassals:
-                return await ctx.send("❌ You have no vassals to tax.")
-
-            # 3. Update Vassals & Notification Logic
-            updated_count = 0
-            notifications = []
-
-            for v in vassals:
-                v.tax_rate = new_rate
-                updated_count += 1
-
-                # Check for Player owner to notify
-                # Find channel name: e.g., "stark-quarters"
-                channel_name = f"{v.name.lower().replace(' ', '-')}-quarters"
-
-                # We defer sending messages until after commit/loop to avoid blocking DB
-                notifications.append(
-                    {"channel_name": channel_name, "house_name": v.name}
-                )
+                # Notify via Locked ID (No slugs!)
+                if chan_id:
+                    chan = self.bot.get_channel(chan_id)
+                    if chan:
+                        try:
+                            await chan.send(
+                                f"📉 **Tax Update:** Your liege, **{liege_house.name}**, has set your tax rate to **{percent}%**."
+                            )
+                        except:
+                            pass
 
             await session.commit()
 
-            # 4. Send Notifications
-            await ctx.send(
-                f"✅ Updated tax rate to **{percent}%** for **{updated_count}** vassals."
-            )
-
-            # Global News
+            # Public Announcement
             news_chan = discord.utils.get(
                 ctx.guild.text_channels, name="news-and-events"
             )
@@ -1163,18 +829,9 @@ class EconomyCog(commands.Cog):
                 embed.description = f"**House {liege_house.name}** has changed the tax rate for their vassals to **{percent}%**."
                 await news_chan.send(embed=embed)
 
-            # Private Channel Notifications
-            for note in notifications:
-                channel = discord.utils.get(
-                    ctx.guild.text_channels, name=note["channel_name"]
-                )
-                if channel:
-                    try:
-                        await channel.send(
-                            f"📉 **Tax Update:** Your liege, **{liege_house.name}**, has set your tax rate to **{percent}%**."
-                        )
-                    except:
-                        pass  # Channel found but maybe perm error
+            await ctx.send(
+                f"✅ Updated tax to **{percent}%** for **{len(vassal_results)}** vassals."
+            )
 
     @gm_econ.command(name="set_tax")
     async def gm_set_tax(self, ctx, house_identifier: str, percent: int):
@@ -1198,11 +855,9 @@ class EconomyCog(commands.Cog):
             await session.commit()
             await ctx.send(f"✅ Set tax rate for **{house.name}** to **{percent}%**.")
 
-    # In app/cogs/economy.py
-
     @gm_econ.command(name="set_vassal_tax")
     async def gm_set_vassal_tax(self, ctx, liege_identifier: str, percent: int):
-        """GM: Set tax rate for all vassals of a specific liege."""
+        """GM: Set tax rate for all vassals of a liege and notify via Locked IDs."""
         if not (0 <= percent <= 100):
             return await ctx.send("❌ Percent 0-100.")
 
@@ -1210,66 +865,44 @@ class EconomyCog(commands.Cog):
             game = await GameRepo.get_active_game(session, ctx.guild.id)
 
             # 1. Find Liege
-            stmt = select(House).where(House.game_id == game.game_id)
+            stmt_l = select(House).where(House.game_id == game.game_id)
             if liege_identifier.isdigit():
-                stmt = stmt.where(House.house_id == int(liege_identifier))
+                stmt_l = stmt_l.where(House.house_id == int(liege_identifier))
             else:
-                stmt = stmt.where(House.name.ilike(liege_identifier))
-            liege = (await session.execute(stmt)).scalars().first()
+                stmt_l = stmt_l.where(House.name.ilike(liege_identifier))
+            liege = (await session.execute(stmt_l)).scalars().first()
 
             if not liege:
                 return await ctx.send(f"❌ Liege '{liege_identifier}' not found.")
 
-            new_rate = percent / 100.0
-
-            # 2. Find Vassals
-            stmt_v = select(House).where(
-                House.liege_id == liege.house_id, House.game_id == game.game_id
+            # 2. Find Vassals AND IDs
+            stmt_v = (
+                select(House, GamePlayer.private_channel_id)
+                .outerjoin(GamePlayer, House.house_id == GamePlayer.claimed_house_id)
+                .where(House.liege_id == liege.house_id, House.game_id == game.game_id)
             )
-            vassals = (await session.execute(stmt_v)).scalars().all()
+            vassals = (await session.execute(stmt_v)).all()
 
             if not vassals:
                 return await ctx.send(f"❌ {liege.name} has no vassals.")
 
-            # --- NOTIFICATION LOGIC (Copied from Player Command) ---
-            notifications = []
-
-            for v in vassals:
-                v.tax_rate = new_rate
-                # Find channel name: e.g., "stark-quarters"
-                channel_name = f"{v.name.lower().replace(' ', '-')}-quarters"
-                notifications.append(
-                    {"channel_name": channel_name, "house_name": v.name}
-                )
+            new_rate = percent / 100.0
+            for v_house, chan_id in vassals:
+                v_house.tax_rate = new_rate
+                if chan_id:
+                    chan = self.bot.get_channel(chan_id)
+                    if chan:
+                        try:
+                            await chan.send(
+                                f"📉 **Tax Update:** Your liege, **{liege.name}**, has set your tax rate to **{percent}%**."
+                            )
+                        except:
+                            pass
 
             await session.commit()
-
-            # 3. Send Confirmations & Announcements
             await ctx.send(
-                f"✅ Updated tax rate to **{percent}%** for all **{len(vassals)}** vassals of **{liege.name}**."
+                f"✅ Updated tax to **{percent}%** for all vassals of **{liege.name}**."
             )
-
-            # A. Public News
-            news_chan = discord.utils.get(
-                ctx.guild.text_channels, name="news-and-events"
-            )
-            if news_chan:
-                embed = discord.Embed(title="📜 Tax Reform", color=discord.Color.gold())
-                embed.description = f"**House {liege.name}** has changed the tax rate for their vassals to **{percent}%**."
-                await news_chan.send(embed=embed)
-
-            # B. Private Channel Notifications for Players
-            for note in notifications:
-                channel = discord.utils.get(
-                    ctx.guild.text_channels, name=note["channel_name"]
-                )
-                if channel:
-                    try:
-                        await channel.send(
-                            f"📉 **Tax Update:** Your liege, **{liege.name}**, has set your tax rate to **{percent}%**."
-                        )
-                    except:
-                        pass  # Permissions might be missing, fail silently
 
     @gm_econ.command(name="stop_tax")
     async def gm_stop_tax(self, ctx, house_identifier: str):
@@ -1291,186 +924,9 @@ class EconomyCog(commands.Cog):
             status = "RESUMED" if house.paying_taxes else "STOPPED"
             await ctx.send(f"✅ House **{house.name}** has **{status}** paying taxes.")
 
-    @gm_econ.command(name="sell")
-    @commands.check(is_gm)
-    async def gm_sell(
-        self, ctx, house_identifier: str, army_id: int, unit_type: str, amount: int
-    ):
-        """GM command to sell troops from any army for any house."""
-        unit_type = unit_type.lower()
-        if amount <= 0:
-            return await ctx.send("❌ Amount must be greater than zero.")
-        if unit_type not in VALID_UNITS:
-            return await ctx.send(
-                f"❌ Invalid unit type. Must be one of: `{', '.join(VALID_UNITS)}`"
-            )
-
-        async with get_session() as session:
-            target_house = await HouseRepo.get_house_by_name_or_id(
-                session, house_identifier
-            )
-            if not target_house:
-                return await ctx.send(f"❌ House `{house_identifier}` not found.")
-
-            army = await session.get(Army, army_id)
-            if not army:
-                return await ctx.send(f"❌ Army with ID `{army_id}` not found.")
-
-            current_amount = army.composition.get(unit_type, 0)
-            if amount > current_amount:
-                return await ctx.send(
-                    f"❌ Cannot sell {amount} {unit_type}. Army {army_id} only has {current_amount}."
-                )
-
-            gold_earned = amount * UNIT_PRICES[unit_type]["sell"]
-            manpower_refunded = amount * UNIT_PRICES[unit_type]["manpower_cost"]
-
-            target_house.treasury += gold_earned
-            if manpower_refunded > 0:
-                target_house.manpower += manpower_refunded
-
-            army.composition[unit_type] -= amount
-            army.troop_count -= amount
-            flag_modified(army, "composition")
-
-            msg = f"GM sold **{amount} {unit_type}** from Army ID `{army_id}` on behalf of **{target_house.name}**. \n+ **{gold_earned}** Gold. \n+ **{manpower_refunded}** Manpower."
-
-            if army.troop_count <= 0:
-                await session.delete(army)
-                msg += "\nArmy was empty and has been disbanded."
-
-            await session.commit()
-            await ctx.send(f"✅ {msg}")
-
-    @gm_econ.command(name="buy")
-    @commands.check(is_gm)
-    async def gm_buy(
-        self,
-        ctx,
-        house_identifier: str,
-        fief_name: str,
-        unit_type: str,
-        amount: int,
-        free: typing.Optional[str] = None,
-    ):
-        """GM command to buy troops for any house. Add 'free' at the end to bypass costs."""
-        unit_type = unit_type.lower()
-        is_free = free == "free"
-
-        if amount <= 0:
-            return await ctx.send("❌ Amount must be greater than zero.")
-        if unit_type not in VALID_UNITS:
-            return await ctx.send(
-                f"❌ Invalid unit type. Must be one of: `{', '.join(VALID_UNITS)}`"
-            )
-
-        async with get_session() as session:
-            target_house = await HouseRepo.get_house_by_name_or_id(
-                session, house_identifier
-            )
-            if not target_house:
-                return await ctx.send(f"❌ House `{house_identifier}` not found.")
-
-            game = await GameRepo.get_active_game(session, ctx.guild.id)
-            fief = await session.scalar(
-                select(Fief).where(
-                    Fief.game_id == game.game_id, Fief.name.ilike(fief_name)
-                )
-            )
-            if not fief:
-                return await ctx.send(f"❌ Fief `{fief_name}` not found in this game.")
-
-            army_type = "SEA" if unit_type == "ships" else "LAND"
-            garrison = await session.scalar(
-                select(Army).where(
-                    Army.house_id == target_house.house_id,
-                    Army.location_x == fief.location_x,
-                    Army.location_y == fief.location_y,
-                    Army.status.in_(["GARRISONED", "DOCKED"]),
-                    Army.army_type == army_type,
-                )
-            )
-
-            if not garrison:
-                garrison_status = "DOCKED" if army_type == "SEA" else "GARRISONED"
-                garrison_name = (
-                    f"Fleet of {fief.name}"
-                    if army_type == "SEA"
-                    else f"Garrison of {fief.name}"
-                )
-                garrison = Army(
-                    game_id=game.game_id,
-                    house_id=target_house.house_id,
-                    commander_name=garrison_name,
-                    troop_count=0,
-                    composition={},
-                    location_x=fief.location_x,
-                    location_y=fief.location_y,
-                    status=garrison_status,
-                    army_type=army_type,
-                )
-                session.add(garrison)
-                await session.flush()
-
-            if not is_free:
-                gold_cost = amount * UNIT_PRICES[unit_type]["buy"]
-                manpower_cost = amount * UNIT_PRICES[unit_type]["manpower_cost"]
-                target_house.treasury -= gold_cost
-                if manpower_cost > 0:
-                    target_house.manpower -= manpower_cost
-
-            garrison.troop_count += amount
-            garrison.composition[unit_type] = (
-                garrison.composition.get(unit_type, 0) + amount
-            )
-            flag_modified(garrison, "composition")
-
-            await session.commit()
-
-            cost_str = (
-                "(Free)"
-                if is_free
-                else f"for {gold_cost} Gold and {manpower_cost} Manpower"
-            )
-            await ctx.send(
-                f"✅ GM added **{amount} {unit_type}** to the **{fief.name}** garrison for **{target_house.name}** {cost_str}."
-            )
-
-    @commands.command(name="tax_income")
-    @commands.check(is_in_house_channel)
-    async def tax_income(self, ctx):
-        """Calculates and displays your expected tax income from all vassals."""
-        async with get_session() as session:
-            house = await self._get_player_house(session, ctx)
-            if not house:
-                return await ctx.send("❌ You do not have a house in this game.")
-
-            service = EconomyService(session)
-            vassals, total_tax = await service.calculate_tax_income_for_house(
-                house.house_id
-            )
-
-            if not vassals:
-                return await ctx.send("You have no vassals to collect taxes from.")
-
-            embed = discord.Embed(
-                title=f"Tax Income Report for House {house.name}",
-                color=discord.Color.green(),
-            )
-            report_lines = []
-            for v_name, v_income, v_rate, tax_val in vassals:
-                status = "✅" if v_rate > 0 else "🚫"
-                report_lines.append(
-                    f"{status} **{v_name}**: Grosses {v_income} * {int(v_rate*100)}% = **{tax_val} Gold**"
-                )
-
-            embed.description = "\n".join(report_lines)
-            embed.set_footer(text=f"Total Expected Tax Income: {total_tax} Gold")
-            await ctx.send(embed=embed)
-
     @gm_econ.command(name="tax_income")
     async def gm_tax_income(self, ctx, *, house_identifier: str):
-        """GM: Calculates the tax income for a specific house."""
+        """GM: Audit expected tax income for any house."""
         async with get_session() as session:
             house = await HouseRepo.get_house_by_name_or_id(session, house_identifier)
             if not house:
@@ -1488,17 +944,10 @@ class EconomyCog(commands.Cog):
                 title=f"GM | Tax Income for House {house.name}",
                 color=discord.Color.blue(),
             )
-            report_lines = []
-            for v_name, v_income, v_rate, tax_val in vassals:
-                status = "✅" if v_rate > 0 else "🚫"
-                report_lines.append(
-                    f"{status} **{v_name}**: Grosses {v_income} * {int(v_rate*100)}% = **{tax_val} Gold**"
-                )
-
+            report_lines = [
+                f"✅ **{v_name}**: {v_income} Gold * {int(v_rate*100)}% = **{tax_val}**"
+                for v_name, v_income, v_rate, tax_val in vassals
+            ]
             embed.description = "\n".join(report_lines)
-            embed.set_footer(text=f"Total Expected Tax Income: {total_tax} Gold")
+            embed.set_footer(text=f"Total Expected: {total_tax} Gold")
             await ctx.send(embed=embed)
-
-
-async def setup(bot):
-    await bot.add_cog(EconomyCog(bot))

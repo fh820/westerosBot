@@ -1,8 +1,6 @@
 import discord
 from discord.ext import commands
 from sqlalchemy import select, update, delete
-
-# NEW, CORRECTED LINE
 from app.db.db_manager import get_session
 from app.db.models import (
     House,
@@ -20,12 +18,11 @@ from app.db.models import (
 )
 from app.services.setup_service import SetupService
 from app.services.scenario_service import ScenarioService
-
-# from app.services.warfare_service import WarfareService
 from app.db.repositories import GameRepo
 from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 from app.services.warfare_service import WarfareService
+from app.services.common import slugify
 
 
 class AdminCog(commands.Cog):
@@ -163,33 +160,6 @@ class AdminCog(commands.Cog):
                     )
                     created_count += 1
         return created_count
-
-    # @commands.command()
-    # @commands.has_permissions(administrator=True)
-    # async def setup_game(self, ctx, ruling_house: str = "Targaryen"):
-    #     async with get_session() as session:
-    #         stmt = select(Game).where(Game.guild_id == ctx.guild.id)
-    #         result = await session.execute(stmt)
-    #         existing_game = result.scalars().first()
-
-    #         if existing_game:
-    #             await ctx.send("⚠️ Game Active. Use `!end_game CONFIRM PURGE`.")
-    #             return
-
-    #     msg = await ctx.send(f"🌍 **Initializing World...** (Crown: {ruling_house})")
-
-    #     async with get_session() as session:
-    #         setup = SetupService(session)
-    #         success, message = await setup.init_world(
-    #             ctx.guild.id, "master_world_data.json", ruling_house
-    #         )
-
-    #         if success:
-    #             await msg.edit(content=f"{message}\n🔨 **Constructing Channels...**")
-    #             count = await self.create_logistics_channels(ctx)
-    #             await ctx.send(f"✅ **Ready.** Created {count} channels.")
-    #         else:
-    #             await ctx.send(f"⚠️ Setup Failed: {message}")
 
     @commands.command()
     @commands.has_permissions(administrator=True)
@@ -403,10 +373,12 @@ class AdminCog(commands.Cog):
                 await ctx.send(f"❌ House **{house_name}** not found.")
                 return
 
+            # ADDED: .options(selectinload(GamePlayer.character))
             stmt_p = (
                 select(GamePlayer)
                 .join(User)
                 .where(User.discord_id == target.id, GamePlayer.game_id == game.game_id)
+                .options(selectinload(GamePlayer.character))
             )
             player = (await session.execute(stmt_p)).scalars().first()
 
@@ -416,6 +388,7 @@ class AdminCog(commands.Cog):
                 )
                 return
 
+            # Demote old head
             stmt_old = select(GamePlayer).where(
                 GamePlayer.claimed_house_id == house.house_id,
                 GamePlayer.is_primary == True,
@@ -424,220 +397,101 @@ class AdminCog(commands.Cog):
             if old_head:
                 old_head.is_primary = False
 
+            # Update Player
             player.claimed_house_id = house.house_id
             player.is_primary = True
+
+            # ADDED: CHARACTER-HOUSE SYNC
+            if player.character:
+                player.character.house_id = house.house_id
+                player.character.is_head = True
 
             await session.commit()
             await ctx.send(
                 f"👑 **Succession:** {target.mention} is now the **Head of House {house.name}**."
             )
-            await ctx.send(
-                f"ℹ️ {target.mention} retains their current quarters, but now controls the main Treasury."
-            )
 
     @commands.command(name="vacate")
     @commands.has_permissions(administrator=True)
     async def vacate(self, ctx, target: discord.Member):
-        """
-        Removes a player's claim from a House or Character, turning it into an NPC.
-        This includes a robust cleanup of all associated roles and channels.
-        Usage: !vacate @User#1234
-        """
-        print("\n--- Running !vacate command ---")
-        print(
-            f"[DEBUG] Command initiated by: {ctx.author.name} for target: {target.name}"
-        )
-
+        """Removes a claim and deletes the channel using the LOCKED ID."""
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
-                print("[DEBUG] FAILED: No active game found.")
                 return await ctx.send("❌ No active game.")
 
-            print(f"[DEBUG] Active game found: {game.game_id}")
-
-            # --- 1. Find the Player's Claim via their Discord ID ---
-            print(f"[DEBUG] Searching for claim for Discord ID: {target.id}")
             stmt = (
                 select(GamePlayer)
                 .join(User)
-                .where(
-                    GamePlayer.game_id == game.game_id,
-                    User.discord_id == target.id,
-                )
+                .where(GamePlayer.game_id == game.game_id, User.discord_id == target.id)
                 .options(
                     selectinload(GamePlayer.house).selectinload(House.dynasty),
                     selectinload(GamePlayer.character),
                 )
             )
             player_claim = (await session.execute(stmt)).scalars().first()
-
             if not player_claim:
-                print("[DEBUG] FAILED: No GamePlayer entry found in the database.")
-                return await ctx.send(
-                    f"❌ Database query found no active claim for {target.mention}."
-                )
+                return await ctx.send(f"❌ No active claim for {target.mention}.")
 
-            # --- FIX IS HERE ---
-            print(f"[DEBUG] Found GamePlayer claim. ID: {player_claim.id}")
-
-            # --- The rest of the command remains the same ---
             claimed_house = player_claim.house
             claimed_char = player_claim.character
+            locked_channel_id = player_claim.private_channel_id
 
-            # --- 2. Robust Discord Role & Channel Cleanup ---
-            print("[DEBUG] Starting Discord asset cleanup...")
-            roles_to_remove = []
-            channels_to_delete = []
+            # 1. CHANNEL CLEANUP
+            deleted_successfully = False
+            if locked_channel_id:
+                channel = self.bot.get_channel(locked_channel_id)
+                if channel:
+                    await channel.delete(reason="Claim vacated")
+                    await ctx.send(
+                        f"🧹 Deleted quarters channel (ID: {locked_channel_id})"
+                    )
+                    deleted_successfully = True
 
-            # A: House Role (e.g., "Stark", "House Stark") - IMPROVED LOGIC
-            if claimed_house:
-                possible_names = {
-                    claimed_house.name,
-                    f"House {claimed_house.name}",
-                    claimed_house.name.replace("House ", ""),
-                }
-                print(f"[DEBUG] Searching for House roles with names: {possible_names}")
-                for name in possible_names:
-                    if role := discord.utils.get(ctx.guild.roles, name=name):
-                        roles_to_remove.append(role)
-
-            # B: Dynasty Role (e.g., "The North")
-            if claimed_house and claimed_house.dynasty:
-                possible_names = {
-                    claimed_house.dynasty.name,
-                    claimed_house.dynasty.name.replace("The ", ""),
-                }
-                print(
-                    f"[DEBUG] Searching for Dynasty roles with names: {possible_names}"
+            if not deleted_successfully:
+                # Fallback to slug search for legacy claims
+                slug_name = slugify(
+                    claimed_char.name if claimed_char else claimed_house.name
                 )
-                for name in possible_names:
-                    if role := discord.utils.get(ctx.guild.roles, name=name):
-                        roles_to_remove.append(role)
+                if fb_chan := discord.utils.get(
+                    ctx.guild.text_channels, name=f"{slug_name}-quarters"
+                ):
+                    await fb_chan.delete()
+                    await ctx.send(
+                        f"🧹 Fallback: Deleted channel by name `#{fb_chan.name}`"
+                    )
 
-            # C: Character Role (e.g., "Robb Stark")
+            # 2. ROLE CLEANUP
+            roles_to_remove = []
+            role_names = [claimed_house.name, f"House {claimed_house.name}"]
             if claimed_char:
-                print(f"[DEBUG] Searching for Character role: {claimed_char.name}")
-                if role := discord.utils.get(ctx.guild.roles, name=claimed_char.name):
-                    roles_to_remove.append(role)
+                role_names.append(claimed_char.name)
 
-            # D: System & Title Roles
-            system_roles = [
+            for r_name in role_names:
+                if r := discord.utils.get(ctx.guild.roles, name=r_name):
+                    roles_to_remove.append(r)
+
+            # System roles
+            sys_roles = [
                 "SmallCouncil",
                 "Hand of the King",
                 "Master of Coin",
-                "Master of Ships",
-                "Master of Whisperers",
-                "Master of Laws",
-                "Grand Maester",
                 "Lord Commander",
             ]
-            print(f"[DEBUG] Checking for system roles on user: {system_roles}")
-            for role_name in system_roles:
-                if role := discord.utils.get(ctx.guild.roles, name=role_name):
-                    if role in target.roles:
-                        roles_to_remove.append(role)
+            for r_name in sys_roles:
+                if (
+                    r := discord.utils.get(ctx.guild.roles, name=r_name)
+                ) and r in target.roles:
+                    roles_to_remove.append(r)
 
-            # Remove duplicate roles and perform the removal
             if roles_to_remove:
-                final_roles = list(set(roles_to_remove))
-                role_names_str = ", ".join(f"'{r.name}'" for r in final_roles)
-                print(
-                    f"[DEBUG] Attempting to remove {len(final_roles)} roles: {role_names_str}"
-                )
-                try:
-                    await target.remove_roles(
-                        *final_roles, reason=f"Claim vacated by {ctx.author.name}"
-                    )
-                    print("[DEBUG] Role removal successful.")
-                    await ctx.send(
-                        f"🎖️ Roles removed from {target.mention}: {', '.join(f'`{r.name}`' for r in final_roles)}"
-                    )
-                except discord.Forbidden:
-                    print(
-                        "[DEBUG] FAILED: Role removal failed due to discord.Forbidden. BOT ROLE IS TOO LOW."
-                    )
-                    await ctx.send(
-                        "⚠️ **Permissions Error:** The bot's role is too low to manage these roles. Please move the bot role higher."
-                    )
-                except discord.HTTPException as e:
-                    print(
-                        f"[DEBUG] FAILED: Role removal failed due to an API error: {e}"
-                    )
-                    await ctx.send(f"⚠️ An API error occurred while removing roles: {e}")
+                await target.remove_roles(*list(set(roles_to_remove)))
+                await ctx.send("🎖️ Roles cleaned.")
 
-            # E: Find associated channels to delete
-            is_house_head = not claimed_char or claimed_char.is_head
-            if is_house_head and claimed_house:
-                ch_name = f"{claimed_house.name.lower().replace(' ', '-')}-quarters"
-                print(f"[DEBUG] Searching for House channel: #{ch_name}")
-                if channel := discord.utils.get(ctx.guild.text_channels, name=ch_name):
-                    channels_to_delete.append(channel)
-
-            if claimed_char:
-                ch_name = f"{claimed_char.name.lower().replace(' ', '-')}-quarters"
-                print(f"[DEBUG] Searching for Character channel: #{ch_name}")
-                if channel := discord.utils.get(ctx.guild.text_channels, name=ch_name):
-                    channels_to_delete.append(channel)
-
-            # Delete the channels
-            if channels_to_delete:
-                final_channels = list(set(channels_to_delete))
-                channel_names_str = ", ".join(f"'#{c.name}'" for c in final_channels)
-                print(
-                    f"[DEBUG] Attempting to delete {len(final_channels)} channels: {channel_names_str}"
-                )
-                for channel in final_channels:
-                    try:
-                        await channel.delete(
-                            reason=f"Claim vacated by {ctx.author.name}"
-                        )
-                        print(f"[DEBUG] Successfully deleted channel #{channel.name}")
-                        await ctx.send(
-                            f"🧹 Channel `#{channel.name}` has been deleted."
-                        )
-                    except discord.Forbidden:
-                        print(
-                            f"[DEBUG] FAILED: Could not delete channel #{channel.name} due to permissions."
-                        )
-                        await ctx.send(
-                            f"⚠️ Lacking permissions to delete `#{channel.name}`."
-                        )
-                    except Exception as e:
-                        print(
-                            f"[DEBUG] FAILED: Could not delete channel #{channel.name}: {e}"
-                        )
-                        await ctx.send(
-                            f"⚠️ Could not delete channel `#{channel.name}`: {e}"
-                        )
-
-            # --- 3. Database Update ---
-            print("[DEBUG] Proceeding to database update.")
-            try:
-                # --- FIX IS HERE ---
-                print(
-                    f"[DEBUG] Issuing session.delete() for GamePlayer ID: {player_claim.id}"
-                )
-                await session.delete(player_claim)
-                print("[DEBUG] Delete command issued. Attempting to commit...")
-                await session.commit()
-                print(
-                    "[DEBUG] COMMIT SUCCESSFUL. Player has been removed from the database."
-                )
-                entity_name = claimed_char.name if claimed_char else claimed_house.name
-                await ctx.send(
-                    f"✅ **Vacate Complete.** {target.mention} has been removed from **{entity_name}**."
-                )
-            except Exception as e:
-                print(
-                    f"[DEBUG] FAILED: Database commit failed. The transaction was rolled back."
-                )
-                print(f"--- DATABASE ERROR --- \n{e}\n--- END ERROR ---")
-                await ctx.send(
-                    f"❌ **CRITICAL ERROR:** A database error occurred during the final step. The user's claim has NOT been removed. Error: {e}"
-                )
-
-            print("--- !vacate command finished ---\n")
+            # 3. DATABASE DELETE
+            await session.delete(player_claim)
+            await session.commit()
+            await ctx.send(f"✅ Vacated claim for {target.mention}.")
 
     @commands.command()
     @commands.has_permissions(administrator=True)
@@ -729,7 +583,6 @@ class AdminCog(commands.Cog):
                 f"🐉 **Dragonstone:** {target.mention} is now the **Crown Prince** ({house.name})."
             )
 
-    # Helper function to handle the DB logic for both
     async def _assign_player_to_house(self, session, game_id, target, house):
         # 1. Get or create User
         stmt_u = select(User).where(User.discord_id == target.id)
@@ -740,19 +593,29 @@ class AdminCog(commands.Cog):
             await session.flush()
 
         # 2. Get or create GamePlayer record
-        stmt_p = select(GamePlayer).where(
-            GamePlayer.user_id == user.user_id, GamePlayer.game_id == game_id
+        # ADDED: selectinload(GamePlayer.character) so we can update the character too
+        stmt_p = (
+            select(GamePlayer)
+            .where(GamePlayer.user_id == user.user_id, GamePlayer.game_id == game_id)
+            .options(selectinload(GamePlayer.character))
         )
         player = (await session.execute(stmt_p)).scalars().first()
+
         if not player:
-            # If they haven't claimed a char yet, we force-create a player record
             player = GamePlayer(game_id=game_id, user_id=user.user_id)
             session.add(player)
             await session.flush()
 
-        # 3. Update Head status
+        # 3. Update Status
         player.claimed_house_id = house.house_id
+        player.private_channel_id = None
         player.is_primary = True
+
+        # NEW: Ensure the character follows the player to the new house
+        if player.character:
+            player.character.house_id = house.house_id
+            player.character.is_head = True
+
         await session.commit()
 
     @commands.command()
@@ -770,22 +633,19 @@ class AdminCog(commands.Cog):
     async def force_grant(self, ctx, target: discord.Member, *, castle_name: str):
         """
         GM Tool: Force transfer a fief, its garrisons, and its vassals to a player's house.
-        Usage: !force_grant @User Dragonstone
         """
         async with get_session() as session:
-            # Imports inside to ensure they are available in context
-            from app.db.models import Fief, Army, House, GamePlayer, User
-            from app.services.setup_service import SetupService
-
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game found.")
 
-            # 1. Find the Fief
-            stmt_fief = select(Fief).where(
-                Fief.name.ilike(castle_name), Fief.game_id == game.game_id
+            # 1. Find Fief (Slugified search for robustness)
+            stmt_fief = select(Fief).where(Fief.game_id == game.game_id)
+            all_fiefs = (await session.execute(stmt_fief)).scalars().all()
+            fief = next(
+                (f for f in all_fiefs if slugify(f.name) == slugify(castle_name)), None
             )
-            fief = (await session.execute(stmt_fief)).scalars().first()
+
             if not fief:
                 return await ctx.send(f"❌ Fief **{castle_name}** not found.")
 
@@ -798,17 +658,15 @@ class AdminCog(commands.Cog):
             target_p = (await session.execute(stmt_target)).scalars().first()
 
             if not target_p or not target_p.claimed_house_id:
-                return await ctx.send(
-                    f"❌ {target.display_name} must have a house/character first (use !approve or !set_head)."
-                )
+                return await ctx.send(f"❌ {target.display_name} has no active claim.")
 
             old_owner_house_id = fief.owner_id
             new_house_id = target_p.claimed_house_id
 
-            # 3. Transfer Fief Ownership
+            # 3. Transfer Ownership
             fief.owner_id = new_house_id
 
-            # 4. Transfer Army Ownership (Land & Sea)
+            # 4. Transfer Armies (Land & Sea)
             stmt_army = select(Army).where(
                 Army.game_id == game.game_id,
                 Army.location_x == fief.location_x,
@@ -818,33 +676,35 @@ class AdminCog(commands.Cog):
             for army in armies_at_loc:
                 army.house_id = new_house_id
 
-            # 5. Transfer Vassalage (Taxes/Banners)
-            # If the fief being granted was a "Liege Seat", move its vassals to the new house
+            # 5. Transfer Vassalage
             stmt_vassals = select(House).where(
                 House.liege_id == old_owner_house_id, House.game_id == game.game_id
             )
             vassals = (await session.execute(stmt_vassals)).scalars().all()
-
-            vassal_count = 0
             for vassal in vassals:
                 vassal.liege_id = new_house_id
-                vassal_count += 1
 
-            # 6. Recalculate Manpower (Sync stats)
-            await session.commit()  # Commit first so SetupService sees the new ownership
+            # 6. Commit and Recalculate
+            await session.commit()
             setup_service = SetupService(session)
             await setup_service.calculate_initial_manpower(game.game_id)
             await session.commit()
 
+            # 7. Notification (The "Step 1" ID fix)
+            # Since we know the target's quarters ID from target_p, we can notify them directly
             msg = (
-                f"⚡ **GM Intervention:** **{fief.name}** granted to {target.mention}.\n"
-                f"🎖️ {len(armies_at_loc)} garrisons transferred.\n"
+                f"⚡ **GM Intervention:** **{fief.name}** granted to {target.mention}."
             )
-            if vassal_count > 0:
-                msg += f"📜 {vassal_count} vassal houses now report to {target.display_name}.\n"
+            if target_p.private_channel_id:
+                chan = self.bot.get_channel(target_p.private_channel_id)
+                if chan:
+                    await chan.send(
+                        f"🏰 **Proclamation:** You have been granted the lordship of **{fief.name}**."
+                    )
 
-            msg += "ℹ️ Manpower and Military Strength synchronized."
-            await ctx.send(msg)
+            await ctx.send(
+                f"{msg}\n🎖️ {len(armies_at_loc)} garrisons and {len(vassals)} vassals transferred."
+            )
 
     @commands.command(name="toggleupkeep")
     @commands.has_permissions(administrator=True)

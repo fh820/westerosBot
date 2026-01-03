@@ -1,62 +1,86 @@
 import discord
 from discord.ext import commands
-from app.db.db_manager import get_session
 from sqlalchemy import select
-from app.db.models import House, Game, GamePlayer, User
-from app.services.setup_service import SetupService
-from app.services.scenario_service import ScenarioService
+from sqlalchemy.orm import selectinload
+import re
+import datetime
+
+from app.db.db_manager import get_session
+from app.db.models import House, Game, GamePlayer, User, Fief, Army, Character
 from app.db.repositories import GameRepo
-from app.db.models import House, Game, GamePlayer, User, Fief, Army
 
 
 class PoliticsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    async def _notify_private_quarters(self, session, game_id, discord_id, embed):
+        """Helper to send an embed to a player's locked private channel."""
+        stmt = (
+            select(GamePlayer)
+            .join(User)
+            .where(User.discord_id == discord_id, GamePlayer.game_id == game_id)
+        )
+        player = (await session.execute(stmt)).scalars().first()
+
+        if player and player.private_channel_id:
+            chan = self.bot.get_channel(player.private_channel_id)
+            if chan:
+                try:
+                    await chan.send(content=f"<@{discord_id}>", embed=embed)
+                except:
+                    pass
+
     # --- GM TOOL ---
     @commands.command(name="coronate")
     @commands.has_permissions(administrator=True)
     async def coronate(self, ctx, target: discord.Member):
-        """
-        GM Only: Assigns the Iron Throne to a player.
-        """
+        """GM Only: Assigns the Iron Throne and notifies the new King's quarters."""
         role = discord.utils.get(ctx.guild.roles, name="IronThrone")
         if not role:
-            await ctx.send("❌ Role `IronThrone` not found. Run `!setup_game`.")
-            return
+            return await ctx.send("❌ Role `IronThrone` not found.")
 
-        # 1. Remove from old King(s)
-        for member in ctx.guild.members:
-            if role in member.roles:
-                await member.remove_roles(role)
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
 
-        # 2. Assign to new King
-        await target.add_roles(role)
+            # 1. Role Management
+            for member in ctx.guild.members:
+                if role in member.roles:
+                    await member.remove_roles(role)
+            await target.add_roles(role)
 
-        # 3. Announcement
-        decree_channel = discord.utils.get(
-            ctx.guild.text_channels, name="royal-decrees"
-        )
-        msg = f"👑 **All Hail His Grace!** {target.mention} now sits the Iron Throne."
+            # 2. Announcement
+            msg = (
+                f"👑 **All Hail His Grace!** {target.mention} now sits the Iron Throne."
+            )
+            decree_channel = discord.utils.get(
+                ctx.guild.text_channels, name="royal-decrees"
+            )
+            if decree_channel:
+                await decree_channel.send(msg)
 
-        if decree_channel:
-            await decree_channel.send(msg)
-        await ctx.send(msg)
+            # 3. Private Notification via ID
+            if game:
+                embed = discord.Embed(
+                    title="👑 Coronation", description=msg, color=discord.Color.gold()
+                )
+                await self._notify_private_quarters(
+                    session, game.game_id, target.id, embed
+                )
+
+            await ctx.send(f"✅ Coronation complete.")
 
     # --- KING TOOLS ---
     @commands.command(name="appoint")
     async def appoint_council(self, ctx, target: discord.Member, *, title: str):
-        """
-        King Only: Appoint a Small Council member.
-        Usage: !appoint @Tywin Hand of the King
-        """
-        # 1. Verify Authority
+        """King Only: Appoint a Small Council member and notify their quarters."""
         king_role = discord.utils.get(ctx.guild.roles, name="IronThrone")
-        if king_role not in ctx.author.roles:
-            await ctx.send("❌ You do not sit the Iron Throne.")
-            return
+        if (
+            king_role not in ctx.author.roles
+            and not ctx.author.guild_permissions.administrator
+        ):
+            return await ctx.send("❌ You do not sit the Iron Throne.")
 
-        # 2. Validate Title
         valid_titles = [
             "Hand of the King",
             "Master of Coin",
@@ -67,362 +91,169 @@ class PoliticsCog(commands.Cog):
             "Grand Maester",
         ]
 
-        # Fuzzy match logic
         selected_title = next(
             (t for t in valid_titles if t.lower() == title.lower()), None
         )
-
         if not selected_title:
-            await ctx.send(f"❌ Invalid Title. Choose from:\n{', '.join(valid_titles)}")
-            return
+            return await ctx.send(
+                f"❌ Invalid Title. Choose from: {', '.join(valid_titles)}"
+            )
 
-        # 3. Fetch Roles
         title_role = discord.utils.get(ctx.guild.roles, name=selected_title)
-        access_role = discord.utils.get(
-            ctx.guild.roles, name="SmallCouncil"
-        )  # Gives channel access
+        access_role = discord.utils.get(ctx.guild.roles, name="SmallCouncil")
 
         if not title_role or not access_role:
-            await ctx.send("❌ Roles missing. Ask GM to run `!setup_game` again.")
-            return
+            return await ctx.send("❌ Council roles are missing from the server.")
 
-        # 4. Assign Roles
-        try:
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
             await target.add_roles(title_role, access_role)
 
-            # 5. Announce
+            # 1. Global Announcement
+            msg = f"📜 **Royal Decree:** His Grace appoints {target.mention} as **{selected_title}**."
             decree_channel = discord.utils.get(
                 ctx.guild.text_channels, name="royal-decrees"
             )
-            msg = f"📜 **Royal Decree:** His Grace appoints {target.mention} as **{selected_title}**."
-
             if decree_channel:
                 await decree_channel.send(msg)
-            else:
-                await ctx.send(msg)
 
-        except discord.Forbidden:
-            await ctx.send(
-                "❌ Bot permission error: Put the Bot Role higher than Council roles."
-            )
+            # 2. Private Notification via ID
+            if game:
+                embed = discord.Embed(
+                    title="🦅 Council Appointment",
+                    description=msg,
+                    color=discord.Color.blue(),
+                )
+                await self._notify_private_quarters(
+                    session, game.game_id, target.id, embed
+                )
 
-    @commands.command(name="dismiss")
-    async def dismiss_council(self, ctx, target: discord.Member):
-        """
-        King Only: Remove someone from the Small Council.
-        """
-        king_role = discord.utils.get(ctx.guild.roles, name="IronThrone")
-        if king_role not in ctx.author.roles:
-            await ctx.send("❌ You do not sit the Iron Throne.")
-            return
+            await ctx.send(f"✅ Appointed {target.display_name} to the council.")
 
-        # Remove all council-related roles
-        council_roles = [
-            "SmallCouncil",
-            "Hand of the King",
-            "Master of Coin",
-            "Master of Whisperers",
-            "Master of Ships",
-            "Master of Laws",
-            "Lord Commander",
-            "Grand Maester",
-        ]
-
-        removed_roles = []
-        for role_name in council_roles:
-            role = discord.utils.get(ctx.guild.roles, name=role_name)
-            if role and role in target.roles:
-                await target.remove_roles(role)
-                removed_roles.append(role_name)
-
-        if removed_roles:
-            await ctx.send(
-                f"🚫 {target.mention} has been dismissed from: {', '.join(removed_roles)}."
-            )
-        else:
-            await ctx.send(f"❌ {target.display_name} holds no council seats.")
-
-    # @commands.command(name="grant_title")
-    # async def grant_title(self, ctx, castle_name: str, *, target_name: str):
-    #     """
-    #     Grants a Fief.
-    #     Usage: !grant_title Dragonstone @Stannis
-    #     OR:    !grant_title Dragonstone Stannis
-    #     """
-    #     async with get_session() as session:
-    #         # 1. Resolve Target (Mention or Name)
-    #         target_user_id = None
-
-    #         # Check if it's a mention (<@123456>)
-    #         if len(ctx.message.mentions) > 0:
-    #             target_user_id = ctx.message.mentions[0].id
-    #         else:
-    #             # Look up by Character Name in DB
-    #             from app.db.models import Character, GamePlayer, User
-
-    #             stmt_char = (
-    #                 select(GamePlayer)
-    #                 .join(Character)
-    #                 .join(User)
-    #                 .where(
-    #                     Character.name.ilike(target_name),
-    #                     GamePlayer.game_id
-    #                     == (
-    #                         select(Game.game_id)
-    #                         .where(
-    #                             Game.guild_id == ctx.guild.id, Game.is_active == True
-    #                         )
-    #                         .scalar_subquery()
-    #                     ),
-    #                 )
-    #             )
-    #             target_p = (await session.execute(stmt_char)).scalars().first()
-    #             if target_p:
-    #                 # We need the Discord ID to ping them later
-    #                 u = await session.get(User, target_p.user_id)
-    #                 target_user_id = u.discord_id
-
-    #         if not target_user_id:
-    #             await ctx.send(f"❌ Could not find a player named **{target_name}**.")
-    #             return
-
-    #         # 2. Find Sender's House
-    #         # ... (Rest of logic is same, just use target_user_id) ...
-
-    #         stmt_sender = (
-    #             select(GamePlayer)
-    #             .join(User)
-    #             .where(
-    #                 User.discord_id == ctx.author.id,
-    #                 GamePlayer.game_id
-    #                 == (
-    #                     select(Game.game_id)
-    #                     .where(Game.guild_id == ctx.guild.id, Game.is_active == True)
-    #                     .scalar_subquery()
-    #                 ),
-    #             )
-    #         )
-    #         sender_p = (await session.execute(stmt_sender)).scalars().first()
-
-    #         if not sender_p or not sender_p.is_primary:
-    #             await ctx.send("❌ You do not have authority.")
-    #             return
-
-    #         # 3. Find Fief
-    #         stmt_fief = select(Fief).where(
-    #             Fief.name.ilike(castle_name), Fief.owner_id == sender_p.claimed_house_id
-    #         )
-    #         fief = (await session.execute(stmt_fief)).scalars().first()
-
-    #         if not fief:
-    #             await ctx.send(f"❌ You do not own **{castle_name}**.")
-    #             return
-
-    #         # 4. Find Target Player Entry
-    #         stmt_target = (
-    #             select(GamePlayer)
-    #             .join(User)
-    #             .where(
-    #                 User.discord_id == target_user_id,
-    #                 GamePlayer.game_id == sender_p.game_id,
-    #             )
-    #         )
-    #         target_p = (await session.execute(stmt_target)).scalars().first()
-
-    #         if not target_p or not target_p.claimed_house_id:
-    #             await ctx.send(f"❌ Target has not claimed a faction yet.")
-    #             return
-
-    #         target_house_id = target_p.claimed_house_id
-
-    #         # 5. EXECUTE
-    #         fief.owner_id = target_house_id
-
-    #         stmt_army = select(Army).where(
-    #             Army.house_id == sender_p.claimed_house_id,
-    #             Army.location_x == fief.location_x,
-    #             Army.location_y == fief.location_y,
-    #             Army.status == "GARRISONED",
-    #         )
-    #         garrisons = (await session.execute(stmt_army)).scalars().all()
-    #         for army in garrisons:
-    #             army.house_id = target_house_id
-    #             army.commander_name = f"Garrison of {fief.name}"
-
-    #         target_house = await session.get(House, target_house_id)
-    #         target_house.liege_id = sender_p.claimed_house_id
-
-    #         # Money
-    #         local_gold = fief.base_income * 2
-    #         sender_house = await session.get(House, sender_p.claimed_house_id)
-
-    #         money_msg = "but coffers were empty."
-    #         if sender_house.treasury >= local_gold:
-    #             sender_house.treasury -= local_gold
-    #             target_house.treasury += local_gold
-    #             money_msg = f"plus **{local_gold}** gold."
-
-    #         await session.commit()
-
-    #         # Get Discord Member object for display
-    #         target_member = ctx.guild.get_member(target_user_id)
-    #         name_display = target_member.mention if target_member else target_name
-
-    #         await ctx.send(
-    #             f"📜 **Proclamation:** **{castle_name}** is granted to {name_display}, {money_msg}"
-    #         )
-    #         break
     @commands.command(name="grant_title")
     async def grant_title(self, ctx, *, input_str: str):
-        """
-        Grants a Fief. Smartly detects multi-word castle names.
-        Usage: !grant_title Storm's End Renly
-        """
+        """Grants a Fief and its garrison to another player. Notifies recipient quarters."""
         async with get_session() as session:
-            # 1. Find Sender's House
-            from app.db.models import GamePlayer, User, House, Fief, Army, Game
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
 
+            # 1. Identify Sender
             stmt_sender = (
                 select(GamePlayer)
                 .join(User)
                 .where(
-                    User.discord_id == ctx.author.id,
-                    GamePlayer.game_id
-                    == (
-                        select(Game.game_id)
-                        .where(Game.guild_id == ctx.guild.id, Game.is_active == True)
-                        .scalar_subquery()
-                    ),
+                    User.discord_id == ctx.author.id, GamePlayer.game_id == game.game_id
                 )
             )
             sender_p = (await session.execute(stmt_sender)).scalars().first()
-
             if not sender_p or not sender_p.is_primary:
-                await ctx.send("❌ You do not have authority to grant titles.")
-                return
+                return await ctx.send("❌ Only House Heads can grant titles.")
 
-            # 2. SMART PARSING: Find which Fief they are talking about
-            # Fetch all fiefs owned by this player
+            # 2. Parsing Fief and Target
             stmt_fiefs = select(Fief).where(Fief.owner_id == sender_p.claimed_house_id)
             owned_fiefs = (await session.execute(stmt_fiefs)).scalars().all()
-
-            # Sort by name length (Longest first) to avoid matching "King" instead of "King's Landing"
             owned_fiefs.sort(key=lambda x: len(x.name), reverse=True)
 
-            target_fief = None
-            target_name = ""
-
+            target_fief, target_name_raw = None, ""
             for f in owned_fiefs:
-                # Check if the input string starts with this castle name (Case insensitive)
                 if input_str.lower().startswith(f.name.lower()):
                     target_fief = f
-                    # The rest of the string is the target name
-                    # We slice the input string by the length of the castle name
-                    target_name = input_str[len(f.name) :].strip()
+                    target_name_raw = input_str[len(f.name) :].strip()
                     break
 
-            if not target_fief:
-                await ctx.send(
-                    f"❌ You do not own a castle matching the start of: **{input_str}**"
+            if not target_fief or not target_name_raw:
+                return await ctx.send(
+                    "❌ Usage: `!grant_title [Castle Name] [@User or Character Name]`"
                 )
-                return
 
-            if not target_name:
-                await ctx.send(
-                    f"❌ You must specify a player to grant **{target_fief.name}** to."
-                )
-                return
-
-            # 3. Resolve Target (Mention or Name)
-            target_user_id = None
-
-            # Check for Mention logic inside the stripped string
-            # (Discord converts @User to <@12345> in the string)
-            import re
-
-            mention_match = re.search(r"<@!?(\d+)>", target_name)
+            # 3. Resolve Recipient (Target)
+            target_discord_id = None
+            mention_match = re.search(r"<@!?(\d+)>", target_name_raw)
 
             if mention_match:
-                target_user_id = int(mention_match.group(1))
+                target_discord_id = int(mention_match.group(1))
             else:
-                # Look up by Character Name in DB
-                from app.db.models import Character
-
+                # Character Name Lookup
                 stmt_char = (
                     select(GamePlayer)
                     .join(Character)
                     .join(User)
                     .where(
-                        Character.name.ilike(target_name),
-                        GamePlayer.game_id == sender_p.game_id,
+                        Character.name.ilike(target_name_raw),
+                        GamePlayer.game_id == game.game_id,
                     )
                 )
-                target_p = (await session.execute(stmt_char)).scalars().first()
-                if target_p:
-                    # We need the Discord ID from the User object
-                    u = await session.get(User, target_p.user_id)
-                    target_user_id = u.discord_id
+                res = (await session.execute(stmt_char)).scalars().first()
+                if res:
+                    target_discord_id = (
+                        await session.get(User, res.user_id)
+                    ).discord_id
 
-            if not target_user_id:
-                await ctx.send(f"❌ Could not find a player named **{target_name}**.")
-                return
+            if not target_discord_id:
+                return await ctx.send(
+                    f"❌ Could not find player/character: **{target_name_raw}**"
+                )
 
-            # 4. Find Target Player Entry (Re-verify)
-            stmt_final_target = (
+            stmt_target_gp = (
                 select(GamePlayer)
                 .join(User)
                 .where(
-                    User.discord_id == target_user_id,
-                    GamePlayer.game_id == sender_p.game_id,
+                    User.discord_id == target_discord_id,
+                    GamePlayer.game_id == game.game_id,
                 )
+                .options(selectinload(GamePlayer.house))
             )
-            target_p = (await session.execute(stmt_final_target)).scalars().first()
+            target_p = (await session.execute(stmt_target_gp)).scalars().first()
 
             if not target_p or not target_p.claimed_house_id:
-                await ctx.send(f"❌ Target has not claimed a faction yet.")
-                return
+                return await ctx.send("❌ Recipient must have a claimed house.")
 
-            target_house_id = target_p.claimed_house_id
+            # 4. EXECUTE TRANSFER
+            old_house_id = sender_p.claimed_house_id
+            new_house_id = target_p.claimed_house_id
 
-            # 5. EXECUTE TRANSFER
-            target_fief.owner_id = target_house_id
+            target_fief.owner_id = new_house_id
 
-            # Transfer Garrison
+            # Move Garrisons
             stmt_army = select(Army).where(
-                Army.house_id == sender_p.claimed_house_id,
+                Army.house_id == old_house_id,
                 Army.location_x == target_fief.location_x,
                 Army.location_y == target_fief.location_y,
                 Army.status == "GARRISONED",
             )
-            garrisons = (await session.execute(stmt_army)).scalars().all()
-            for army in garrisons:
-                army.house_id = target_house_id
-                army.commander_name = f"Garrison of {target_fief.name}"
+            for army in (await session.execute(stmt_army)).scalars().all():
+                army.house_id = new_house_id
 
-            # Set Liege
-            target_house = await session.get(House, target_house_id)
-            target_house.liege_id = sender_p.claimed_house_id
+            # Set Liege-Vassal Relationship
+            target_p.house.liege_id = old_house_id
 
-            # Money Transfer
-            local_gold = target_fief.base_income * 2
-            sender_house = await session.get(House, sender_p.claimed_house_id)
-
-            money_msg = "but coffers were empty."
-            if sender_house.treasury >= local_gold:
-                sender_house.treasury -= local_gold
-                target_house.treasury += local_gold
-                money_msg = f"plus **{local_gold}** gold."
+            # Small gold transfer for "upkeep"
+            transfer_amt = target_fief.base_income * 2
+            sender_house = await session.get(House, old_house_id)
+            if sender_house.treasury >= transfer_amt:
+                sender_house.treasury -= transfer_amt
+                target_p.house.treasury += transfer_amt
+                gold_msg = f"with **{transfer_amt} Gold**."
+            else:
+                gold_msg = "with empty coffers."
 
             await session.commit()
 
-            # Get Discord Member object for display
-            target_member = ctx.guild.get_member(target_user_id)
-            display_name = target_member.mention if target_member else target_name
+            # 5. NOTIFY RECIPIENT QUARTERS via Locked ID
+            proclamation = f"📜 **Royal Proclamation:** **{target_fief.name}** has been granted to your House {gold_msg}"
+            embed = discord.Embed(
+                title="🏰 Title Granted",
+                description=proclamation,
+                color=discord.Color.green(),
+            )
+            await self._notify_private_quarters(
+                session, game.game_id, target_discord_id, embed
+            )
 
             await ctx.send(
-                f"📜 **Proclamation:** **{target_fief.name}** is granted to {display_name}, {money_msg}"
+                f"✅ **Proclamation dispatched:** {target_fief.name} is now held by {target_p.house.name}."
             )
-            
 
 
 async def setup(bot):
