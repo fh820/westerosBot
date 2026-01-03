@@ -8,6 +8,9 @@ from app.db.models import Army, Character, House, Battle, Fief, GamePlayer, User
 from app.services.engine_manager import PF_ENGINE
 from app.services.chronicler import generate_battle_narration
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy import select, delete, or_
+from sqlalchemy.orm import selectinload
+from app.db.models import Battle, Army, User, GamePlayer, PendingInteraction
 
 # --- CONFIGURATION ---
 UNIT_STATS = {
@@ -464,19 +467,24 @@ class BattleService:
         self._stop_movement_immediately(winner)
 
         # ====================================================================
-        # === NEW: HEAVY ROUT CASUALTIES (The fix for light losses) ==========
+        # === HEAVY ROUT CASUALTIES LOGIC ====================================
         # ====================================================================
 
         # Calculate victory intensity (Index 0-5)
-        # 5 minus the points the loser managed to get.
-        # (e.g., 5-0 victory = Index 5, 5-4 victory = Index 1)
         score_index = max(0, min(5, 5 - loser_score))
 
-        # Pull percentages from your config tables
-        # If your WINNER_CASUALTY_TABLE yields high losses for high index,
-        # consider swapping its values so Crushing Victories = Low Winner losses.
-        win_pct = WINNER_CASUALTY_TABLE.get(score_index, 0.05)
-        los_pct = LOSER_CASUALTY_TABLE.get(score_index, 0.45)
+        # Pull percentages from config (ensure these dicts exist in your class or global)
+        win_pct = getattr(self, "WINNER_CASUALTY_TABLE", {}).get(score_index, 0.05)
+        los_pct = getattr(self, "LOSER_CASUALTY_TABLE", {}).get(score_index, 0.45)
+
+        # Fallback if config is missing
+        if (
+            win_pct == 0.05
+            and los_pct == 0.45
+            and not getattr(self, "WINNER_CASUALTY_TABLE", None)
+        ):
+            # Hardcoded fallback just in case
+            win_pct, los_pct = 0.05, 0.45
 
         def apply_rout_losses(army, loss_pct, is_loser):
             if army.troop_count <= 0:
@@ -507,12 +515,14 @@ class BattleService:
                 new_cargo_count = int(old_cargo_count * survival_rate)
 
                 if new_cargo_count < old_cargo_count:
+                    # Assuming ArmyRepo logic is available or imported
+                    from app.db.repositories import ArmyRepo
+
                     c_comp, _ = ArmyRepo._calculate_split(
                         army.cargo.get("composition", {}),
                         new_cargo_count,
                         old_cargo_count,
                     )
-                    # Use a copy to avoid mutation issues
                     new_cargo_obj = dict(army.cargo)
                     new_cargo_obj["troop_count"] = new_cargo_count
                     new_cargo_obj["composition"] = c_comp
@@ -525,7 +535,6 @@ class BattleService:
         # Execute the rout
         apply_rout_losses(winner, win_pct, False)
         apply_rout_losses(loser, los_pct, True)
-        # ====================================================================
 
         commander_fate_str = ""
         is_destroyed = False
@@ -545,7 +554,7 @@ class BattleService:
             f"<@{loser_data.discord_id}>" if loser_data else f"**{loser.house.name}**"
         )
 
-        # 5. Handle Fate (The logic now uses the already-reduced troop counts)
+        # 5. Handle Fate
         if is_siege_victory:
             is_destroyed = True
             commander_fate_str = f"The garrison of **{battle.fief.name}** was overrun! Survivors were put to the sword or captured."
@@ -622,14 +631,32 @@ class BattleService:
             f"**Aftermath:**\n{commander_fate_str}"
         )
 
-        # 8. Database Cleanup
+        # 8. Database Cleanup (CRITICAL FIX: ORDER MATTERS)
         try:
             if not is_siege_victory:
+                # STEP 1: Delete Pending Interactions referencing the loser
+                # This unlocks the army from the "pending_interactions" table
+                if is_destroyed and loser:
+                    await self.session.execute(
+                        delete(PendingInteraction).where(
+                            or_(
+                                PendingInteraction.army1_id == loser.army_id,
+                                PendingInteraction.army2_id == loser.army_id,
+                            )
+                        )
+                    )
+
+                # STEP 2: Delete the Battle Record
+                # This unlocks the army from the "battles" table
                 await self.session.delete(battle)
-                if is_destroyed:
+
+                # STEP 3: Delete the Army
+                # Now that all references are gone, we can safely delete the army
+                if is_destroyed and loser:
                     await self.session.delete(loser)
             else:
                 final_report += "\n\n(🏰 **Siege Ended!** Use `!resolve_siege [ID]` to finalize results.)"
+
             await self.session.commit()
         except Exception as e:
             await self.session.rollback()
@@ -852,15 +879,7 @@ class BattleService:
         )
 
         odds = 50 + ((att_bp + att_mar) - (def_bp + def_mar + def_bonus))
-        # new_battle = Battle(
-        #     game_id=game_id,
-        #     attacker_id=attacker.army_id,
-        #     defender_id=defender.army_id,
-        #     battle_type="SIEGE",
-        #     siege_phase="WALLS",
-        #     fief_id=fief.fief_id,
-        #     current_odds=int(max(10, min(90, odds))),
-        # )
+
         new_battle = Battle(
             game_id=game_id,
             attacker_id=attacker.army_id,
@@ -869,7 +888,7 @@ class BattleService:
             siege_phase="WALLS",
             fief_id=fief.fief_id,
             current_odds=int(max(10, min(90, odds))),
-            # --- ADD THESE LINES ---
+            # Store initial counts for accurate reporting
             att_start_count=attacker.troop_count,
             def_start_count=defender.troop_count,
         )
@@ -889,13 +908,11 @@ class BattleService:
         )
         reloaded = (await self.session.execute(stmt_reload)).scalars().first()
 
-        # --- FIX A: RETURN THE ACTUAL CALCULATION LOG, NOT THE WORD "Log" ---
         calc_log = (
             f"**Attacker:** BP `{att_bp:.1f}` + Martial `{att_mar}`\n"
             f"**Defender:** BP `{def_bp:.1f}` + Martial `{def_mar}` + Bonus `{def_bonus}`"
         )
         return reloaded, f"Odds: {int(max(10, min(90, odds)))}", calc_log
-        # --- END FIX A ---
 
     async def resolve_siege_consequences(self, battle_id: int):
         stmt = (
@@ -954,10 +971,39 @@ class BattleService:
                     )
                     self._stop_movement_immediately(asset)
 
-            # Final Cleanup: Delete the destroyed defender (if it exists) and the battle record.
+            # --- DB CLEANUP ---
+            if loser:
+                # 1. Delete Pending Interactions (Unlocks Army from Interactions)
+                await self.session.execute(
+                    delete(PendingInteraction).where(
+                        or_(
+                            PendingInteraction.army1_id == loser.army_id,
+                            PendingInteraction.army2_id == loser.army_id,
+                        )
+                    )
+                )
+
+                # 2. Delete ALL Battle references (Unlocks Army from Battles)
+                # This fixes the specific error you just encountered.
+                # If the army is destroyed, it cannot be in ANY battle.
+                await self.session.execute(
+                    delete(Battle).where(
+                        or_(
+                            Battle.attacker_id == loser.army_id,
+                            Battle.defender_id == loser.army_id,
+                        )
+                    )
+                )
+
+            # 3. Delete the specific battle object (if not caught by step 2)
+            # We check if it's still attached to the session before deleting to avoid warnings
+            if battle in self.session:
+                await self.session.delete(battle)
+
+            # 4. Delete Army (Safe now)
             if loser:
                 await self.session.delete(loser)
-            await self.session.delete(battle)
+
             await self.session.commit()
             return (
                 True,
@@ -967,11 +1013,35 @@ class BattleService:
             # --- DEFENDER WINS ---
             loser = attacker_army
 
-            # Final Cleanup: If the attacker was destroyed, delete it. Then delete the battle record.
+            # --- DB CLEANUP ---
             if loser and loser.troop_count <= 0:
+                # 1. Delete Pending Interactions
+                await self.session.execute(
+                    delete(PendingInteraction).where(
+                        or_(
+                            PendingInteraction.army1_id == loser.army_id,
+                            PendingInteraction.army2_id == loser.army_id,
+                        )
+                    )
+                )
+
+                # 2. Delete ALL Battle references for the destroyed loser
+                await self.session.execute(
+                    delete(Battle).where(
+                        or_(
+                            Battle.attacker_id == loser.army_id,
+                            Battle.defender_id == loser.army_id,
+                        )
+                    )
+                )
+
+                # 3. Delete the Army
                 await self.session.delete(loser)
 
-            await self.session.delete(battle)
+            # Ensure the current battle is deleted (if it wasn't the loser's only battle)
+            if battle in self.session:
+                await self.session.delete(battle)
+
             await self.session.commit()
             return (
                 True,
