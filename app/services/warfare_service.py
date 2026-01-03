@@ -1108,6 +1108,7 @@ class WarfareService:
 
         player: GamePlayer | None = None
         player_claimed_house_id: int | None = None
+
         if not is_gm_override:
             player = await self.session.scalar(
                 select(GamePlayer).where(
@@ -1115,7 +1116,7 @@ class WarfareService:
                 )
             )
             if not player or not player.claimed_house_id:
-                return False, "❌ You do not command a house.", None
+                return False, "❌ You do not command a house."
             player_claimed_house_id = player.claimed_house_id
 
         effective_commanding_house_id: int | None = None
@@ -1123,31 +1124,24 @@ class WarfareService:
             if acting_house_id is not None:
                 effective_commanding_house_id = acting_house_id
             else:
-                effective_commanding_house_id = (
-                    army.house_id
-                )  # Fallback to army's current house if GM doesn't specify
+                effective_commanding_house_id = army.house_id
         else:
             effective_commanding_house_id = player_claimed_house_id
 
         if effective_commanding_house_id is None:
-            return (
-                False,
-                "❌ Cannot determine the commanding house for this action.",
-                None,
-            )
+            return False, "❌ Cannot determine the commanding house for this action."
 
-        # CORE FIX: Use the robust authority check
+        # Authority Check
         if not is_gm_override and not await self._check_command_authority(player, army):
             return (
                 False,
                 f"❌ You do not have command authority over **{army.commander_name}**.",
             )
-        # If GM is overriding, also ensure the army belongs to the house the GM specified (or the army's current house).
+
         if is_gm_override and army.house_id != effective_commanding_house_id:
             return (
                 False,
                 f"❌ GM override: Army {army.commander_name} does not belong to the specified acting house ID {effective_commanding_house_id}.",
-                None,
             )
 
         # Validation
@@ -1156,6 +1150,7 @@ class WarfareService:
                 False,
                 "❌ Split amount must be a positive number and less than the army's total size.",
             )
+
         if army.status in ["MARCHING", "SAILING"]:
             return (
                 False,
@@ -1168,7 +1163,6 @@ class WarfareService:
         )
         await self.session.commit()
 
-        # Dynamic and informative response message
         unit_label = "ships" if new_army.army_type == "SEA" else "men"
         cargo_msg = ""
         if new_army.cargo and new_army.cargo.get("troop_count", 0) > 0:
@@ -1697,6 +1691,7 @@ class WarfareService:
     ):
         """
         Merges two same-owner armies or fleets.
+        Target: Army 1 (survives). Source: Army 2 (deleted).
         """
         army1 = await ArmyRepo.get_army_by_id(self.session, id_1)
         army2 = await ArmyRepo.get_army_by_id(self.session, id_2)
@@ -1706,13 +1701,14 @@ class WarfareService:
 
         player: GamePlayer | None = None
         player_claimed_house_id: int | None = None
+
         if not is_gm_override:
             stmt_p = select(GamePlayer).where(
                 GamePlayer.user_id == user_id, GamePlayer.game_id == game_id
             )
             player = (await self.session.execute(stmt_p)).scalars().first()
             if not player or not player.claimed_house_id:
-                return False, "❌ You do not command a house.", None
+                return False, "❌ You do not command a house."
             player_claimed_house_id = player.claimed_house_id
 
         effective_commanding_house_id: int | None = None
@@ -1720,18 +1716,12 @@ class WarfareService:
             if acting_house_id is not None:
                 effective_commanding_house_id = acting_house_id
             else:
-                effective_commanding_house_id = (
-                    army1.house_id
-                )  # Assume GM acts for army1's house if not specified
+                effective_commanding_house_id = army1.house_id
         else:
             effective_commanding_house_id = player_claimed_house_id
 
         if effective_commanding_house_id is None:
-            return (
-                False,
-                "❌ Cannot determine the commanding house for this action.",
-                None,
-            )
+            return False, "❌ Cannot determine the commanding house for this action."
 
         # Authority checks
         if not is_gm_override:
@@ -1740,7 +1730,7 @@ class WarfareService:
             if not auth1 or not auth2:
                 return False, "❌ You do not have command authority over both units."
         else:
-            # If GM is overriding, ensure the armies belong to the effective_commanding_house_id
+            # GM Override Check
             if (
                 army1.house_id != effective_commanding_house_id
                 or army2.house_id != effective_commanding_house_id
@@ -1748,13 +1738,12 @@ class WarfareService:
                 return (
                     False,
                     f"❌ With GM override for House ID {effective_commanding_house_id}, both armies must belong to this house.",
-                    None,
                 )
 
         if army1.army_type != army2.army_type:
             return False, "❌ You cannot merge a land army with a fleet."
 
-        # FIX: DISTANCE TOLERANCE
+        # Distance Tolerance
         dist = math.sqrt(
             (army1.location_x - army2.location_x) ** 2
             + (army1.location_y - army2.location_y) ** 2
@@ -1773,9 +1762,20 @@ class WarfareService:
         gold_from_army2 = army2.treasury or 0
         army1.treasury = (army1.treasury or 0) + gold_from_army2
 
-        # Snap army1 to exact position of army2 or vice-versa to prevent drift accumulation
+        # Snap army1 to exact position of army2 or vice-versa
         army1.location_x = army2.location_x
-        army1.location_y = army2.location_y  # Ensure Y is also snapped
+        army1.location_y = army2.location_y
+
+        # --- FIX: Cleanup Interactions for Army 2 ---
+        # Army 2 is about to be deleted. We must remove its locks first.
+        await self.session.execute(
+            delete(PendingInteraction).where(
+                or_(
+                    PendingInteraction.army1_id == army2.army_id,
+                    PendingInteraction.army2_id == army2.army_id,
+                )
+            )
+        )
 
         await ArmyRepo.merge_army_logic(
             self.session,
