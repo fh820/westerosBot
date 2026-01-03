@@ -701,13 +701,50 @@ class EconomyCog(commands.Cog):
 
     @gm_econ.command(name="check")
     async def gm_check(self, ctx, *, identifier: str):
-        """GM Audit: Checks gold for a House (name/ID) or Army (ID)."""
+        """GM Audit: Checks gold for a House (name/ID) or Army (ID or House + Army ID)."""
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
-            # 1. Try finding a HOUSE first
+            parts = identifier.split()
+
+            # --------------------------------------------------
+            # CASE 1: House + Army ID  (e.g. "Stark 580" or "3 580")
+            # --------------------------------------------------
+            if len(parts) == 2 and parts[1].isdigit():
+                house_ident, army_id = parts
+
+                stmt_house = select(House).where(House.game_id == game.game_id)
+                if house_ident.isdigit():
+                    stmt_house = stmt_house.where(House.house_id == int(house_ident))
+                else:
+                    stmt_house = stmt_house.where(House.name.ilike(house_ident))
+
+                house = (await session.execute(stmt_house)).scalars().first()
+                if not house:
+                    return await ctx.send("❌ House not found.")
+
+                stmt_army = select(Army).where(
+                    Army.army_id == int(army_id),
+                    Army.house_id == house.house_id,
+                )
+                army = (await session.execute(stmt_army)).scalars().first()
+                if not army:
+                    return await ctx.send("❌ Army not found for that House.")
+
+                service = EconomyService(session)
+                _, gold, name = await service.get_army_gold(army.army_id)
+
+                return await ctx.send(
+                    f"🕵️ **GM Audit:** Army **{name}** (ID: {army.army_id})\n"
+                    f"House: **{house.name}**\n"
+                    f"Treasury: **{gold} Gold**"
+                )
+
+            # --------------------------------------------------
+            # CASE 2: House only (name or ID)
+            # --------------------------------------------------
             stmt_house = select(House).where(House.game_id == game.game_id)
             if identifier.isdigit():
                 stmt_house = stmt_house.where(House.house_id == int(identifier))
@@ -717,17 +754,22 @@ class EconomyCog(commands.Cog):
             house = (await session.execute(stmt_house)).scalars().first()
             if house:
                 return await ctx.send(
-                    f"🕵️ **GM Audit:** House **{house.name}** (ID: {house.house_id})\nTreasury: **{house.treasury} Gold**"
+                    f"🕵️ **GM Audit:** House **{house.name}** (ID: {house.house_id})\n"
+                    f"Treasury: **{house.treasury} Gold**"
                 )
 
-            # 2. Try finding an ARMY
+            # --------------------------------------------------
+            # CASE 3: Army only (ID)
+            # --------------------------------------------------
             if identifier.isdigit():
                 service = EconomyService(session)
                 army, gold, name = await service.get_army_gold(int(identifier))
                 if army:
                     owner = army.house.name if army.house else "Unknown"
                     return await ctx.send(
-                        f"🕵️ **GM Audit:** Army **{name}** (ID: {army.army_id})\nOwner: {owner}\nTreasury: **{gold} Gold**"
+                        f"🕵️ **GM Audit:** Army **{name}** (ID: {army.army_id})\n"
+                        f"Owner: {owner}\n"
+                        f"Treasury: **{gold} Gold**"
                     )
 
             await ctx.send(f"❌ Could not find House or Army matching '{identifier}'.")
