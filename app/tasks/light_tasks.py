@@ -331,14 +331,20 @@ def dispatch_scout_report(
 def dispatch_gate_alert(
     game_id: int, army_id: int, gate_name: str, gate_owner_house_id: int
 ):
-    """Halts army at a gate and pings defender's locked quarters."""
+    """
+    Halts army at a gate, SAVES their destination for resumption, and pings defender.
+    """
     session = get_sync_session()
     try:
+        # Load Army with House data
         army = session.query(Army).options(selectinload(Army.house)).get(army_id)
+
+        # Validation: Check if army exists and is actually moving
+        # If it's already IDLE, the task might be a duplicate or stale
         if not army or army.status not in ["MARCHING", "SAILING"]:
             return
 
-        # 1. Halt exactly at gate
+        # 1. Snap Location to the Gate Fief (Visual clarity)
         gate_fief = (
             session.query(Fief)
             .filter(Fief.name.ilike(gate_name), Fief.game_id == game_id)
@@ -350,14 +356,28 @@ def dispatch_gate_alert(
                 gate_fief.location_y,
             )
 
+        # 2. CRITICAL FIX: Save the intended destination before wiping it.
+        # This is required for "Iterative Gate Alerts". When the gate opens,
+        # we will read these values to calculate the path to the NEXT gate/target.
+        if army.destination_x is not None and army.destination_y is not None:
+            army.original_destination_x = army.destination_x
+            army.original_destination_y = army.destination_y
+
+        # 3. Halt the Army
         army.status = "IDLE"
+
+        # Revoke the Celery movement task so it doesn't trigger "arrival" later
         if army.task_id:
             AsyncResult(army.task_id, app=celery_app).revoke(terminate=True)
-        army.destination_x = army.destination_y = army.arrival_time = (
-            army.departure_time
-        ) = army.task_id = None
 
-        # 2. Find Defender's Locked Quarters
+        # Clear active movement data
+        army.destination_x = None
+        army.destination_y = None
+        army.arrival_time = None
+        army.departure_time = None
+        army.task_id = None
+
+        # 4. Find Defender's Locked Quarters for Notification
         defender = (
             session.query(User.discord_id, GamePlayer.private_channel_id, House.name)
             .join(GamePlayer, User.user_id == GamePlayer.user_id)
@@ -365,10 +385,12 @@ def dispatch_gate_alert(
             .where(
                 GamePlayer.claimed_house_id == gate_owner_house_id,
                 GamePlayer.game_id == game_id,
+                GamePlayer.is_primary == True,  # Ensure we target the main player
             )
             .first()
         )
 
+        # 5. Dispatch Event to Redis (Cog will handle the Discord Embed)
         payload = {
             "type": "GATE_ALERT",
             "guild_id": army.house.game.guild_id,
@@ -383,12 +405,16 @@ def dispatch_gate_alert(
                 "house_id": gate_owner_house_id,
                 "house_name": defender[2] if defender else "NPC",
                 "discord_id": defender[0] if defender else None,
-                "private_channel_id": defender[1] if defender else None,  # CRITICAL
+                "private_channel_id": defender[1] if defender else None,
                 "is_npc": defender is None,
             },
         }
         REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
         session.commit()
+
+    except Exception as e:
+        session.rollback()
+        print(f"[ERROR] dispatch_gate_alert failed: {e}")
     finally:
         session.close()
 

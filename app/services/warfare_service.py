@@ -93,20 +93,59 @@ class WarfareService:
                 game_id, call_id, vid, new_percentage
             )
 
+    async def resume_march_from_gate(self, army_id: int):
+        """
+        Called when a gate owner allows an army to pass.
+        Triggers a fresh move calculation to catch ANY SUBSEQUENT GATES.
+        """
+        army = await self.session.get(Army, army_id)
+        if not army:
+            return False, "Army not found."
+
+        # Check if we have a saved destination
+        if army.original_destination_x is None or army.original_destination_y is None:
+            return (
+                False,
+                "❌ No previous destination found. Please issue a new move command manually.",
+            )
+
+        dest_x = army.original_destination_x
+        dest_y = army.original_destination_y
+
+        # Clear the saved destination so we don't get stuck in a loop if they stop again
+        army.original_destination_x = None
+        army.original_destination_y = None
+
+        # --- CRITICAL: CALL MOVE_ARMY AGAIN ---
+        # This recalculates the path from the current gate to the target.
+        # The _check_gate_interception logic will run on this NEW path.
+        # It will skip the current gate (i < 10) and find the NEXT gate (Moat Cailin).
+        return await self.move_army(
+            game_id=army.game_id,
+            user_id=None,  # System action, no user auth needed if called internally
+            army_id=army.army_id,
+            target_x=dest_x,
+            target_y=dest_y,
+            is_gm_override=True,  # Bypass ownership checks since this is a system resume
+        )
+
     async def _check_gate_interception(
         self, game_id: int, marcher_house_id: int, path_points: list
     ):
         """
         Scans a calculated path to see if it passes through a Choke Point
         controlled by another house.
-        Returns: (GateDict, InterceptionIndex) or (None, None)
+
+        Logic:
+        1. Checks proximity to defined choke points.
+        2. Checks ownership (if marcher owns it, pass).
+        3. Checks Whitelist (if owner listed marcher, pass).
+
+        Returns: (GateDict, FiefObj, PathIndex) or (None, None, None)
         """
         INTERCEPTION_RADIUS = (
             15.0  # Pixels. If path gets this close, they are at the gate.
         )
-
-        # Get the marcher's alliances (optional, if you have an alliance system)
-        # alliances = await self.get_alliances(marcher_house_id)
 
         for i, (px, py) in enumerate(path_points):
             # Skip the first few pixels (so you don't get intercepted by the castle you are leaving)
@@ -119,23 +158,35 @@ class WarfareService:
 
                 if dist <= INTERCEPTION_RADIUS:
                     # 2. Check Ownership (Dynamic DB check required because owners change)
-                    # We assume the castle name is unique per game
                     stmt = select(Fief).where(
                         Fief.game_id == game_id, Fief.name == gate["castle"]
                     )
                     gate_fief = (await self.session.execute(stmt)).scalars().first()
 
                     if not gate_fief:
-                        continue  # Should not happen if DB is synced
+                        continue  # Should not happen if DB is synced and map config matches DB
 
                     gate_owner_id = gate_fief.owner_id
 
-                    # 3. Logic: Stop if you don't own it and aren't the owner
-                    if gate_owner_id != marcher_house_id:
-                        # OPTIONAL: Add logic here to skip if they are allies
-                        # if gate_owner_id in alliances: continue
+                    # 3. Logic: Check if we need to stop the army
 
-                        return gate, gate_fief, i
+                    # A. If marcher owns the gate, they pass freely.
+                    if gate_owner_id == marcher_house_id:
+                        continue
+
+                    # B. Check Whitelist (Diplomacy)
+                    # We need to fetch the owner's House object to see their gate_whitelist settings.
+                    gate_owner_house = await self.session.get(House, gate_owner_id)
+
+                    if gate_owner_house and gate_owner_house.gate_whitelist:
+                        # gate_whitelist is a JSON list of IDs, e.g., [1, 5, 20]
+                        if marcher_house_id in gate_owner_house.gate_whitelist:
+                            # They are allowed to pass. Skip interception.
+                            continue
+
+                    # C. Interception Triggered
+                    # If we reach here, the marcher does NOT own the gate and is NOT whitelisted.
+                    return gate, gate_fief, i
 
         return None, None, None
 

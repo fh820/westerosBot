@@ -711,6 +711,62 @@ class DiplomacyCog(commands.Cog):
                 content=f"✅ **Naval Call Sent!**\n- Notified {notified_count} player-vassals.\n- GM approval panel sent for {len(result_data)} NPC fleets."
             )
 
+    @commands.command(name="gate_access")
+    @commands.check(is_in_house_channel)
+    async def gate_access(self, ctx, action: str, *, house_name: str = None):
+        """
+        Manage who can pass your castles.
+        Usage:
+        !gate_access add Stark
+        !gate_access remove Stark
+        !gate_access list
+        """
+        action = action.lower()
+
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            # Get Player's House
+            stmt = select(GamePlayer).where(
+                GamePlayer.user_id
+                == (
+                    select(User.user_id).where(User.discord_id == ctx.author.id)
+                ).scalar_subquery(),
+                GamePlayer.game_id == game.game_id,
+            )
+            player = (await session.execute(stmt)).scalars().first()
+            if not player or not player.claimed_house_id:
+                return await ctx.send("❌ You do not command a house.")
+
+            # Handle List View
+            if action == "list":
+                house = await session.get(House, player.claimed_house_id)
+                if not house.gate_whitelist:
+                    return await ctx.send(
+                        "📜 **Gate Whitelist:** None (All armies will be stopped)."
+                    )
+
+                # Fetch names
+                stmt_names = select(House.name).where(
+                    House.house_id.in_(house.gate_whitelist)
+                )
+                names = (await session.execute(stmt_names)).scalars().all()
+                return await ctx.send(f"📜 **Gate Whitelist:**\n" + ", ".join(names))
+
+            # Handle Add/Remove
+            if not house_name:
+                return await ctx.send(
+                    "❌ Please specify a house name. Example: `!gate_access add Stark`"
+                )
+
+            service = DiplomacyService(session)
+            success, msg = await service.manage_gate_whitelist(
+                game.game_id, player.claimed_house_id, house_name, action
+            )
+            await ctx.send(msg)
+
     @commands.command(name="vassals")
     @commands.check(is_in_house_channel)
     async def list_vassals(self, ctx):
@@ -1369,6 +1425,29 @@ class DiplomacyCog(commands.Cog):
                 )
             else:
                 await ctx.send("❌ Declarations channel not found.")
+
+    @commands.command(name="gm_gate_access")
+    @commands.has_permissions(administrator=True)
+    async def gm_gate_access(
+        self, ctx, host_house_id: int, action: str, target_house_id: int
+    ):
+        """
+        GM: Manage gate access for NPC houses.
+        Usage: !gm_gate_access [HostID] [add/remove] [TargetID]
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            service = DiplomacyService(session)
+            success, msg = await service.manage_gate_whitelist(
+                game.game_id,
+                host_house_id,
+                target_house_id,  # Passing ID directly for GMs is usually safer/easier
+                action.lower(),
+            )
+            await ctx.send(f"🤖 GM Command: {msg}")
 
 
 async def setup(bot):

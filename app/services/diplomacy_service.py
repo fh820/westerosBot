@@ -837,3 +837,72 @@ class DiplomacyService:
             True,
             f"📜 **Fealty Sworn:** House **{vassal_house.name}** now bends the knee to **{liege_house.name}**.",
         )
+
+    async def manage_gate_whitelist(
+        self,
+        game_id: int,
+        host_house_id: int,
+        target_identifier: str | int,
+        action: str,
+    ):
+        """
+        Manages the gate_whitelist for a specific house.
+        Action: "add" or "remove".
+        """
+        host_house = await self.session.get(House, host_house_id)
+        if not host_house:
+            return False, "❌ Host house not found."
+
+        # Find the target house (the one being allowed/banned)
+        target_house = None
+        if isinstance(target_identifier, int):
+            target_house = await self.session.get(House, target_identifier)
+        else:
+            # Search by name
+            stmt = select(House).where(
+                House.game_id == game_id, House.name.ilike(target_identifier)
+            )
+            target_house = (await self.session.execute(stmt)).scalars().first()
+
+        if not target_house:
+            return False, f"❌ House '**{target_identifier}**' not found."
+
+        if target_house.house_id == host_house.house_id:
+            return False, "❌ You cannot whitelist yourself."
+
+        # Ensure the list exists
+        if host_house.gate_whitelist is None:
+            host_house.gate_whitelist = []
+
+        current_list = list(host_house.gate_whitelist)  # Copy to list
+
+        if action == "add":
+            if target_house.house_id in current_list:
+                return False, f"⚠️ House **{target_house.name}** is already whitelisted."
+
+            current_list.append(target_house.house_id)
+            host_house.gate_whitelist = current_list
+            flag_modified(host_house, "gate_whitelist")  # Critical for JSON updates
+            await self.session.commit()
+            return (
+                True,
+                f"✅ **{target_house.name}** has been added to the Gate Whitelist. Their armies may now pass your forts.",
+            )
+
+        elif action == "remove":
+            if target_house.house_id not in current_list:
+                return (
+                    False,
+                    f"⚠️ House **{target_house.name}** is not in the whitelist.",
+                )
+
+            current_list.remove(target_house.house_id)
+            host_house.gate_whitelist = current_list
+            flag_modified(host_house, "gate_whitelist")
+            await self.session.commit()
+            return (
+                True,
+                f"🚫 **{target_house.name}** has been removed from the Gate Whitelist. They will be stopped at your gates.",
+            )
+
+        return False, "❌ Invalid action. Use 'add' or 'remove'."

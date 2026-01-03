@@ -183,6 +183,7 @@ class House(Base):
     manpower = Column(Integer, default=0)  # Current available recruits
     manpower_cap = Column(Integer, default=0)  # Max recruits based on land
     tax_rate = Column(Float, default=0.10)  # Default 10% (0.10)
+    gate_whitelist = Column(JSON, default=[])
 
 
 class Fief(Base):
