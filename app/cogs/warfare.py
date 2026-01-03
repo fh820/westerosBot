@@ -784,24 +784,37 @@ class WarfareCog(commands.Cog):
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
         """
-        Listener for interaction buttons.
-        UPDATED: Allows GMs/Admins to control NPC armies.
+        Handles button clicks for interception interactions (Battle/Meet/March).
+        Supports Player owners and GM/Admin overrides for NPCs.
         """
         custom_id = interaction.data.get("custom_id")
         if not custom_id or not custom_id.startswith("interaction_"):
             return
 
+        # 1. Parse Button Data (FIXED)
         try:
-            # Format: interaction_[CHOICE]_[INTERACTION_ID]_[ARMY_ID]
-            _, choice, interaction_id_str, army_id_str = custom_id.split("_")
-            interaction_id = int(interaction_id_str)
-            army_id = int(army_id_str)
-        except ValueError:
+            # Strip the prefix first: "interaction_MARCH_ON_1_50" -> "MARCH_ON_1_50"
+            raw_data = custom_id[len("interaction_") :]
+
+            # Split from the RIGHT, max 2 splits.
+            # "MARCH_ON_1_50" -> ['MARCH_ON', '1', '50']
+            # "BATTLE_1_50"   -> ['BATTLE', '1', '50']
+            parts = raw_data.rsplit("_", 2)
+
+            if len(parts) != 3:
+                raise ValueError("Invalid ID format")
+
+            choice = parts[0]  # "MARCH_ON"
+            interaction_id = int(parts[1])
+            army_id = int(parts[2])
+
+        except (IndexError, ValueError):
             return
 
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
 
         async with get_session() as session:
+            # 2. Load Interaction State
             pending_interaction = await session.get(
                 PendingInteraction,
                 interaction_id,
@@ -812,25 +825,32 @@ class WarfareCog(commands.Cog):
             )
 
             if not pending_interaction or pending_interaction.status != "PENDING":
-                await interaction.followup.send(
-                    "This interaction has expired or been resolved.", ephemeral=True
+                return await interaction.followup.send(
+                    "❌ This encounter has already been resolved or has expired.",
+                    ephemeral=True,
                 )
-                return
 
-            # --- AUTHORIZATION LOGIC ---
+            # 3. Determine target army and verify authority
             is_authorized = False
-
-            # 1. Identify which army this button is for
             target_army = None
+
             if army_id == pending_interaction.army1_id:
                 target_army = pending_interaction.army1
             elif army_id == pending_interaction.army2_id:
                 target_army = pending_interaction.army2
 
-            if target_army:
-                # 2. Check if User is the Owner
-                stmt = (
-                    select(User)
+            if not target_army:
+                return await interaction.followup.send(
+                    "❌ Error: Targeted army not found.", ephemeral=True
+                )
+
+            # A. Check if the user is the GM/Admin
+            if interaction.user.guild_permissions.administrator:
+                is_authorized = True
+            else:
+                # B. Check if the user is the primary owner of the house
+                stmt_owner = (
+                    select(User.discord_id)
                     .join(GamePlayer)
                     .where(
                         GamePlayer.claimed_house_id == target_army.house_id,
@@ -838,43 +858,52 @@ class WarfareCog(commands.Cog):
                         GamePlayer.is_primary == True,
                     )
                 )
-                owner = (await session.execute(stmt)).scalars().first()
-
-                if owner and owner.discord_id == interaction.user.id:
-                    is_authorized = True
-
-                # 3. Check if User is GM (Fallback for NPCs or Override)
-                # We check Discord permissions for speed, or you can use your is_gm DB check
-                elif interaction.user.guild_permissions.administrator:
+                owner_discord_id = (await session.execute(stmt_owner)).scalar()
+                if owner_discord_id == interaction.user.id:
                     is_authorized = True
 
             if not is_authorized:
-                await interaction.followup.send(
-                    "❌ You do not have authority to command this army.", ephemeral=True
+                return await interaction.followup.send(
+                    "❌ **Authority Denied:** You do not have the right to issue orders to this host.",
+                    ephemeral=True,
                 )
-                return
 
-            # --- EXECUTE CHOICE ---
+            # 4. Save the Choice
             if army_id == pending_interaction.army1_id:
                 pending_interaction.army1_choice = choice
-            elif army_id == pending_interaction.army2_id:
+            else:
                 pending_interaction.army2_choice = choice
 
             await session.commit()
 
-            # Feedback
+            # 5. UI Cleanup: Disable buttons and update embed
             clean_choice = (
                 choice.replace("MARCH_ON", "CONTINUE MARCH").replace("_", " ").title()
             )
-            await interaction.followup.send(
-                f"✅ Orders confirmed: **{clean_choice}**.", ephemeral=True
-            )
 
-            # Disable buttons on the view to prevent double-clicking
-            original_view = InteractionView(interaction_id, army_id)
-            await original_view.disable_all_buttons()
+            # Update the specific message the user clicked
+            # We create a "Disabled" version of the view to show the order is locked in
+            from app.ui.interaction_view import InteractionView
+
+            disabled_view = InteractionView(interaction_id, army_id)
+            for item in disabled_view.children:
+                item.disabled = True
+
+            # Edit the original message to confirm the choice locally
+            new_embed = interaction.message.embeds[0]
+            new_embed.add_field(
+                name="Current Orders", value=f"✅ **{clean_choice}**", inline=False
+            )
+            new_embed.color = discord.Color.green()
+
             try:
-                await interaction.edit_original_response(view=original_view)
+                await interaction.edit_original_response(
+                    embed=new_embed, view=disabled_view
+                )
+                await interaction.followup.send(
+                    f"✅ Your orders for **{clean_choice}** have been relayed to the commanders.",
+                    ephemeral=True,
+                )
             except:
                 pass
 
@@ -1596,7 +1625,6 @@ class WarfareCog(commands.Cog):
             await ctx.send(msg)
 
     @commands.command(name="form_coalition")
-    @commands.check(is_in_house_channel)
     async def form_coalition(self, ctx, new_name: str, *army_ids: int):
         """
         Merges multiple armies.
@@ -2308,9 +2336,14 @@ class WarfareCog(commands.Cog):
     @gm_war.command(name="form_coalition")
     @commands.check(is_gm)
     async def gm_form_coalition(
-        self, ctx, target_house_id: int, new_name: str, *army_ids: int
+        self, ctx, leader_house_id: int, new_name: str, *army_ids: int
     ):
-        """GM: Form a coalition for an NPC house. All armies must belong to the target_house_id. Usage: !gm_war form_coalition [HouseID] "Name" 101 102"""
+        """
+        GM: Form a coalition from ANY armies.
+        leader_house_id: The House that will control the new Coalition.
+        army_ids: List of armies to merge (can belong to different houses).
+        Usage: !gm_war form_coalition [LeaderHouseID] "Grand Host" 101 102 103
+        """
         if len(army_ids) < 2:
             return await ctx.send("❌ You must provide at least two army IDs.")
 
@@ -2326,15 +2359,15 @@ class WarfareCog(commands.Cog):
                 return await ctx.send("❌ GM user not found in DB.")
 
             service = WarfareService(session)
-            # When GM forms a coalition for an NPC, bypass_auth is essentially handled by is_gm_override
+
             success, msg = await service.form_coalition(
                 game_id=game.game_id,
-                leader_user_id=gm_user_obj.user_id,  # GM is the "leader" initiating the command
+                leader_user_id=gm_user_obj.user_id,
                 new_name=new_name,
                 army_ids=army_ids,
-                bypass_auth=True,  # Allow GM to bypass the multi-player consent flow
-                is_gm_override=True,  # Critical flag
-                acting_house_id=target_house_id,  # Critical: specify the NPC house that owns the coalition
+                bypass_auth=True,  # Bypasses "User owns Army" check
+                is_gm_override=True,  # Bypasses "Army matches House" check
+                acting_house_id=leader_house_id,  # The resulting owner
             )
             await ctx.send(f"✅ GM Command: {msg}")
 
