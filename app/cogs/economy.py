@@ -951,3 +951,7 @@ class EconomyCog(commands.Cog):
             embed.description = "\n".join(report_lines)
             embed.set_footer(text=f"Total Expected: {total_tax} Gold")
             await ctx.send(embed=embed)
+
+
+async def setup(bot):
+    await bot.add_cog(EconomyCog(bot))

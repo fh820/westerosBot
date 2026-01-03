@@ -276,7 +276,6 @@ class DiplomacyCog(commands.Cog):
             print(f"Re-initialized {len(pending_calls)} pending banner control panels.")
 
     @commands.command(name="call_banners")
-    @commands.cooldown(1, 360, commands.BucketType.user)  # 6 Minutes
     @commands.check(is_in_house_channel)
     async def call_banners(self, ctx, *, rally_point: str):
         """Initiates a banner call. Uses Locked Channel IDs to notify player vassals."""
@@ -669,15 +668,32 @@ class DiplomacyCog(commands.Cog):
                         "⚠️ NPC call prepared, but #gm-alerts is missing."
                     )
 
+                vassal_data_for_db = [
+                    {
+                        "house_id": v["house_id"],
+                        "house_name": v["house_name"],
+                        "max_troops": v[
+                            "max_amount"
+                        ],  # Rename key to match UI expectations
+                        "percent": v["percent"],
+                        "home_x": v.get("home_x", 0),
+                        "home_y": v.get("home_y", 0),
+                        "source_fleet_id": v.get("source_fleet_id"),
+                        "breakdown": v.get("breakdown", ""),
+                    }
+                    for v in result_data
+                ]
+
                 new_pending_call = PendingBannerCall(
                     game_id=game.game_id,
                     guild_id=ctx.guild.id,
                     channel_id=ctx.channel.id,
                     message_id=player_wait_msg.id,
                     gm_channel_id=gm_channel.id,
+                    gm_message_id=0,
                     liege_house_id=liege_player.house.house_id,
                     rally_point_name=rally_point,
-                    vassal_data=result_data,
+                    vassal_data=vassal_data_for_db,  # Use the mapped data
                     call_type="SEA",
                 )
                 session.add(new_pending_call)

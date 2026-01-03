@@ -84,9 +84,8 @@ class VassalSelect(Select):
         self.pending_call = pending_call
         is_sea = pending_call.call_type == "SEA"
         unit_name, unit_key = (
-            ("ships", "max_ships") if is_sea else ("troops", "max_troops")
+            ("ships", "max_troops") if is_sea else ("troops", "max_troops")
         )
-
         options = []
         # Filter vassals that actually have troops/ships to contribute
         for v in pending_call.vassal_data:
@@ -174,7 +173,7 @@ class BannerControlView(View):
                 "GM Panel: Naval Levy Call",
                 discord.Color.dark_blue(),
                 "ships",
-                "max_ships",
+                "max_troops",
             )
             if is_sea
             else ("GM Panel: Banner Call", discord.Color.gold(), "troops", "max_troops")
