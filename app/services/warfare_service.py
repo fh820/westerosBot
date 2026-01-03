@@ -3396,7 +3396,6 @@ class WarfareService:
         # =================================================================
         # 3. DETERMINE CARGO & TROOPS
         # =================================================================
-        # ... (Rest of the function remains the same, no changes are needed below this point) ...
         try:
             ship_amount = (
                 int(ships_input)
@@ -3409,66 +3408,99 @@ class WarfareService:
             total_men_in_cargo = 0
             cargo_payload = None
 
+            # --- FIND LAND ARMY AT SOURCE ---
+            stmt_land = select(Army).where(
+                Army.game_id == game_id,
+                Army.house_id == effective_commanding_house_id,
+                Army.location_x == source_fleet.location_x,
+                Army.location_y == source_fleet.location_y,
+                Army.army_type == "LAND",
+                Army.status.in_(["IDLE", "GARRISONED"]),
+            )
+            ground_army = (await self.session.execute(stmt_land)).scalars().first()
+
+            # --- CASE A: USER SPECIFIED SPECIFIC UNITS (e.g., "10 archers, 20 infantry") ---
             if units_input is not None and units_input.lower() != "load":
-                stmt_loc = select(Fief).where(
-                    Fief.game_id == game_id,
-                    Fief.location_x == source_fleet.location_x,
-                    Fief.location_y == source_fleet.location_y,
-                    Fief.owner_id == effective_commanding_house_id,
-                )
-                if not (await self.session.execute(stmt_loc)).scalars().first():
+                if not ground_army:
                     return (
                         False,
-                        "❌ You can only draft NEW troops at your own Fiefs.",
+                        "❌ There are no land troops at this location to load into the fleet.",
                         None,
                     )
-                parsed_men, specific_comp = await self._parse_units_for_sailing(
+
+                parsed_men, requested_comp = await self._parse_units_for_sailing(
                     units_input
                 )
+
                 if parsed_men > ship_amount * ship_capacity:
-                    raise ValueError(f"Over Capacity.")
-                cargo_commander = commander
-                if not cargo_commander:
-                    h_name = (
-                        await self.session.get(House, effective_commanding_house_id)
-                    ).name
-                    cargo_commander = f"Captain of {h_name}"
+                    raise ValueError(
+                        f"Over Capacity. Your {ship_amount} ships can only carry {ship_amount * ship_capacity} men."
+                    )
+
+                # Validate if the ground army has the requested units
+                for unit_type, count in requested_comp.items():
+                    current_count = ground_army.composition.get(unit_type, 0)
+                    if current_count < count:
+                        return (
+                            False,
+                            f"❌ {ground_army.commander_name} does not have enough {unit_type}. (Required: {count}, Available: {current_count})",
+                            None,
+                        )
+
+                # --- DEDUCTION LOGIC ---
+                ground_army.troop_count -= parsed_men
+                for unit_type, count in requested_comp.items():
+                    ground_army.composition[unit_type] -= count
+
+                # Update the ground army or delete it if empty
+                if ground_army.troop_count <= 0:
+                    await self.session.delete(ground_army)
+                else:
+                    # Required so SQLAlchemy notices the change in the JSON column
+                    from sqlalchemy.orm.attributes import flag_modified
+
+                    flag_modified(ground_army, "composition")
+
                 total_men_in_cargo = parsed_men
                 cargo_payload = {
-                    "commander": cargo_commander,
+                    "commander": commander
+                    or f"Captain of {ground_army.commander_name}",
                     "troop_count": parsed_men,
-                    "composition": specific_comp,
+                    "composition": requested_comp,
                 }
-            elif source_fleet.cargo and source_fleet.cargo.get("troop_count", 0) > 0:
+
+            # --- CASE B: RE-LOADING EXISTING FLEET CARGO ---
+            elif units_input == "load" or (
+                source_fleet.cargo and source_fleet.cargo.get("troop_count", 0) > 0
+            ):
+                # This handles when ships already have men on them (e.g. from a previous disembark or mid-sea change)
                 total_men_in_cargo = source_fleet.cargo.get("troop_count", 0)
                 cargo_payload = copy.deepcopy(source_fleet.cargo)
+
+            # --- CASE C: AUTO-PICKUP ALL TROOPS (IF NO INPUT SPECIFIED) ---
             else:
-                ground_army = await self.session.scalar(
-                    select(Army).where(
-                        Army.game_id == game_id,
-                        Army.house_id == effective_commanding_house_id,
-                        Army.location_x == source_fleet.location_x,
-                        Army.location_y == source_fleet.location_y,
-                        Army.army_type == "LAND",
-                        Army.status.in_(["IDLE", "GARRISONED"]),
-                    )
-                )
                 if ground_army:
                     if ground_army.troop_count > ship_amount * ship_capacity:
-                        raise ValueError("Not enough ships for ground army.")
+                        raise ValueError(
+                            f"Not enough ships to carry the entire army ({ground_army.troop_count} men). Specify a smaller number of units."
+                        )
+
                     total_men_in_cargo = ground_army.troop_count
                     cargo_payload = {
                         "commander": ground_army.commander_name,
                         "troop_count": ground_army.troop_count,
                         "composition": ground_army.composition,
                     }
+                    # Delete the land army because it's now entirely on the ships
                     await self.session.delete(ground_army)
+
                 elif needs_hybrid_journey:
                     return (
                         False,
                         "❌ Cannot start hybrid journey: No troops on fleet and no army to pick up.",
                         None,
                     )
+
         except ValueError as e:
             return False, f"❌ Input Error: {e}", None
 

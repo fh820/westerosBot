@@ -1865,7 +1865,7 @@ from app.checks import (
     is_in_house_channel,
     recruitment_is_enabled,
 )  # Assuming recruitment_is_enabled is correctly defined elsewhere
-
+from app.services.common import slugify
 
 fief_cache = {}
 
@@ -3258,7 +3258,7 @@ class WarfareCog(commands.Cog):
 
     async def handle_arrival_notification(self, data):
         """
-        Sends arrival embeds.
+        Sends arrival embeds with robust channel and owner detection.
         """
         guild_id = data.get("guild_id")
         if not guild_id:
@@ -3268,12 +3268,9 @@ class WarfareCog(commands.Cog):
         if not guild:
             return
 
-        unit_noun = "men"
-        if data.get("unit_type") == "SEA":
-            unit_noun = "ships"
+        unit_noun = "ships" if data.get("unit_type") == "SEA" else "men"
 
-        # --- FIX: Robust Game ID retrieval ---
-        # If game_id is missing from payload, we try to fetch active game for the guild
+        # 1. Robust Game & Owner Retrieval
         game_id = data.get("game_id")
         owner_discord_id = None
 
@@ -3284,29 +3281,30 @@ class WarfareCog(commands.Cog):
                     game_id = game.game_id
 
             if game_id:
-                # Determine if the army belongs to a primary player
-                player_owner = await session.scalar(
+                # FIX: Removed 'is_primary == True' to ensure any claimant gets the ping.
+                # Also cast house_id to int to prevent type-mismatch errors.
+                stmt = (
                     select(GamePlayer)
                     .where(
                         GamePlayer.game_id == game_id,
-                        GamePlayer.claimed_house_id == data["house_id"],
-                        GamePlayer.is_primary == True,
+                        GamePlayer.claimed_house_id == int(data["house_id"]),
                     )
                     .options(selectinload(GamePlayer.user))
                 )
-                owner_discord_id = (
-                    player_owner.user.discord_id
-                    if player_owner and player_owner.user
-                    else None
-                )
+                player_owner = (await session.execute(stmt)).scalars().first()
 
-        # Determine channels
-        house_name_clean = data["house_name"].lower().replace(" ", "-")
-        chan_name_private = f"{house_name_clean}-quarters"
+                if player_owner and player_owner.user:
+                    owner_discord_id = player_owner.user.discord_id
+
+        # 2. Channel Identification using your slugify method
+        # If house is "Prince of Dragonstone", this generates "prince-of-dragonstone"
+        house_slug = slugify(data["house_name"])
+        chan_name_private = f"{house_slug}-quarters"
+
         private_channel = discord.utils.get(guild.text_channels, name=chan_name_private)
 
-        # 1. Private/GM Notification
-        if owner_discord_id and private_channel:  # Player-owned army, channel found
+        # 3. Private/Player Notification Logic
+        if owner_discord_id and private_channel:
             embed_private = discord.Embed(
                 title="📍 Arrival Report",
                 description=f"**{data['commander']}** ({data['troops']} {unit_noun}) has arrived at **{data['location']}**.",
@@ -3316,25 +3314,40 @@ class WarfareCog(commands.Cog):
                 await private_channel.send(
                     f"<@{owner_discord_id}>", embed=embed_private
                 )
+                # If we successfully messaged the player, we can skip the GM alert
+                notification_sent_to_player = True
             except:
-                pass
-        else:  # NPC army OR player army with missing channel
+                notification_sent_to_player = False
+        else:
+            notification_sent_to_player = False
+
+        # 4. GM Notification (Fallback)
+        if not notification_sent_to_player:
             gm_channel = discord.utils.get(guild.text_channels, name="gm-alerts")
             if gm_channel:
+                # Add helpful debugging info for the GM if a player exists but the channel is missing
+                reason = "NPC/Unclaimed"
+                if owner_discord_id and not private_channel:
+                    reason = f"Channel Missing (Expected: `#{chan_name_private}`)"
+
                 embed_gm = discord.Embed(
-                    title="📍 Arrival Report (NPC/Unclaimed)",
-                    description=f"**{data['commander']}** of House **{data['house_name']}** ({data['troops']} {unit_noun}) has arrived at **{data['location']}**.",
+                    title=f"📍 Arrival Report ({reason})",
+                    description=(
+                        f"**{data['commander']}** of House **{data['house_name']}** "
+                        f"({data['troops']} {unit_noun}) has arrived at **{data['location']}**."
+                    ),
                     color=discord.Color.blue(),
                 )
                 await gm_channel.send(embed=embed_gm)
 
-        # 2. Public Notification
+        # 5. Public Notification (Fog of War)
         if data["troops"] >= FOG_OF_WAR_THRESHOLD:
             public_channel = discord.utils.get(
                 guild.text_channels, name="army-movements"
             ) or discord.utils.get(guild.text_channels, name="general-movements")
 
             if public_channel:
+                # Try to find a role matching the house name for a pretty mention
                 house_role = discord.utils.get(guild.roles, name=data["house_name"])
                 mention = (
                     house_role.mention
@@ -3342,7 +3355,10 @@ class WarfareCog(commands.Cog):
                     else f"**House {data['house_name']}**"
                 )
 
-                public_msg = f"✅ The forces of {mention} under the command of **{data['commander']}** ({data['troops']} {unit_noun}) have arrived at **{data['location']}**."
+                public_msg = (
+                    f"✅ The forces of {mention} under the command of **{data['commander']}** "
+                    f"({data['troops']} {unit_noun}) have arrived at **{data['location']}**."
+                )
                 await public_channel.send(public_msg)
 
     async def handle_path_notification(self, data):

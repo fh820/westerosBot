@@ -657,31 +657,36 @@ class DiplomacyService:
             return False, [], []
 
         # 2. HELPER: RECURSIVE TREE WALKER
+        # 2. HELPER: RECURSIVE TREE WALKER
         async def process_house_tree(house_obj):
             """
             Returns: (total_troops, breakdown_names_list, notifications_list)
             """
-            # A. Check for Player Owner
+            # A. Check for Player Owner (JOIN Character to get the name for the quarters channel)
             stmt_owner = (
-                select(User)
+                select(User, Character.name)
                 .join(GamePlayer, User.user_id == GamePlayer.user_id)
+                .outerjoin(Character, GamePlayer.character_id == Character.char_id)
                 .where(
                     GamePlayer.game_id == game_id,
                     GamePlayer.claimed_house_id == house_obj.house_id,
                     GamePlayer.is_primary == True,
                 )
             )
-            owner_user = (await self.session.execute(stmt_owner)).scalars().first()
+            result = (await self.session.execute(stmt_owner)).first()
 
-            if owner_user:
-                # Stop recursion, return notification target
+            if result:
+                owner_user, char_name = result
+                # Stop recursion for players.
+                # IMPORTANT: Use 'user_id' and 'character_name' to match your Command logic
                 return (
                     0,
                     [],
                     [
                         {
                             "house_name": house_obj.name,
-                            "discord_id": owner_user.discord_id,
+                            "character_name": char_name,
+                            "user_id": owner_user.discord_id,
                         }
                     ],
                 )
@@ -712,8 +717,6 @@ class DiplomacyService:
                 if s_troops > 0:
                     tree_troops += s_troops
                     tree_breakdown.append(sub.name)
-                    # Also include any sub-sub names if you want deep nesting shown
-                    # tree_breakdown.extend(s_names)
 
                 tree_notifs.extend(s_notifs)
 
