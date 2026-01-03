@@ -975,55 +975,97 @@ class WarfareService:
         is_admin: bool = False,
         is_gm_override: bool = False,
     ):
+        """
+        Stops a moving army or fleet immediately.
+        Calculates exact position based on elapsed time and clears any pending land legs.
+        """
+        from sqlalchemy.orm.attributes import flag_modified  # Required for JSON updates
+
         army = await ArmyRepo.get_army_by_id(self.session, army_id)
         if not army:
             return False, "❌ Army not found."
 
+        # 1. Authority Check
         if not is_admin and not is_gm_override:
             stmt_p = select(GamePlayer).where(
                 GamePlayer.user_id == user_id, GamePlayer.game_id == game_id
             )
             player = (await self.session.execute(stmt_p)).scalars().first()
 
-            # Use the shared authority check logic
             if not player or not await self._check_command_authority(player, army):
-                return False, "❌ You do not command this army."
+                return False, "❌ You do not have authority to halt this host."
 
+        # 2. Status Validation
         if army.status not in ["MARCHING", "SAILING"]:
-            return False, "⚠️ This army is not marching."
+            return False, "⚠️ This unit is not currently in motion."
 
+        # 3. Task Revocation
         if army.task_id:
-            celery_app.control.revoke(army.task_id, terminate=True)
+            try:
+                celery_app.control.revoke(army.task_id, terminate=True)
+            except Exception as e:
+                print(f"[WARFARE] Task revocation failed for {army_id}: {e}")
 
+        # 4. Interpolate Position (Stop exactly where they are now)
         now = datetime.datetime.now(datetime.timezone.utc)
         if army.arrival_time and army.departure_time:
-            total_dur = (army.arrival_time - army.departure_time).total_seconds()
-            elapsed = (now - army.departure_time).total_seconds()
+            # Ensure we are using UTC-aware timestamps for math
+            dep_time = (
+                army.departure_time.replace(tzinfo=datetime.timezone.utc)
+                if army.departure_time.tzinfo is None
+                else army.departure_time
+            )
+            arr_time = (
+                army.arrival_time.replace(tzinfo=datetime.timezone.utc)
+                if army.arrival_time.tzinfo is None
+                else army.arrival_time
+            )
+
+            total_dur = (arr_time - dep_time).total_seconds()
+            elapsed = (now - dep_time).total_seconds()
             progress = min(1.0, max(0.0, elapsed / total_dur if total_dur > 0 else 1.0))
         else:
             progress = 0.0
 
+        # Update coords based on progress percentage
         army.location_x = (
             army.location_x + (army.destination_x - army.location_x) * progress
         )
         army.location_y = (
             army.location_y + (army.destination_y - army.location_y) * progress
         )
-        army.status = "IDLE"
-        army.destination_x, army.destination_y = None, None
-        army.arrival_time, army.departure_time, army.task_id = None, None, None
 
-        # CLEANUP LOGS
+        # 5. Handle Hybrid Journey Cleanup (The 'Better Method' Fix)
+        # If this is a fleet with a pending land march, we must delete the march data.
+        if army.army_type == "SEA" and army.cargo and "pending_march" in army.cargo:
+            del army.cargo["pending_march"]
+            flag_modified(army, "cargo")
+            print(
+                f"[DEBUG] Cleared pending land leg for Fleet {army.army_id} during halt."
+            )
+
+        # 6. Clear Movement Fields
+        army.status = "IDLE"
+        army.destination_x = None
+        army.destination_y = None
+        army.arrival_time = None
+        army.departure_time = None
+        army.task_id = None
+
+        # 7. Cleanup trajectory logs used for interceptions
         await ArmyRepo.clear_march_logs(self.session, army_id)
 
         await self.session.commit()
 
+        # 8. Resolve Final Location Flavor Text
         region = await self._get_region_from_db(
             game_id, army.location_x, army.location_y
         )
+        unit_type = "fleet" if army.army_type == "SEA" else "army"
+
         return (
             True,
-            f"🛑 **Halt!** The army **{army.commander_name}** has stopped its march in **{region}**.",
+            f"🛑 **Halt!** The {unit_type} **{army.commander_name}** has stopped its movement in **{region}**.",
         )
 
     async def set_world_rule(self, game_id: int, rule_name: str, value: bool):
@@ -1743,159 +1785,6 @@ class WarfareService:
             True,
             f"✅ **Embarked!** {land_army.commander_name} ({land_army.troop_count} men) boarded the {fleet.commander_name}.",
         )
-
-    # async def disembark_army(
-    #     self,
-    #     game_id: int,
-    #     user_id: int,
-    #     army_id: int,
-    #     is_gm_override: bool = False,
-    #     acting_house_id: int | None = None,
-    # ):
-    #     """
-    #     Unloads cargo from a fleet.
-    #     Includes "Snap to Land" to prevent troops from drowning in water tiles.
-    #     """
-    #     # 1. Validation
-    #     fleet = await ArmyRepo.get_army_by_id(self.session, army_id)
-    #     if not fleet or fleet.army_type != "SEA":
-    #         return False, "❌ Not a fleet."
-
-    #     player: GamePlayer | None = None
-    #     player_claimed_house_id: int | None = None
-    #     if not is_gm_override:
-    #         player = await self.session.scalar(
-    #             select(GamePlayer).where(
-    #                 GamePlayer.user_id == user_id, GamePlayer.game_id == game_id
-    #             )
-    #         )
-    #         if not player or not player.claimed_house_id:
-    #             return False, "❌ You do not command a house.", None
-    #         player_claimed_house_id = player.claimed_house_id
-
-    #     effective_commanding_house_id: int | None = None
-    #     if is_gm_override:
-    #         if acting_house_id is not None:
-    #             effective_commanding_house_id = acting_house_id
-    #         else:
-    #             effective_commanding_house_id = (
-    #                 fleet.house_id
-    #             )  # Assume GM acts for the fleet's house
-    #     else:
-    #         effective_commanding_house_id = player_claimed_house_id
-
-    #     if effective_commanding_house_id is None:
-    #         return (
-    #             False,
-    #             "❌ Cannot determine the commanding house for this action.",
-    #             None,
-    #         )
-
-    #     if not is_gm_override and (
-    #         not player or fleet.house_id != player_claimed_house_id
-    #     ):
-    #         return False, "❌ Not your fleet."
-
-    #     # If GM is overriding, ensure the fleet belongs to the effective_commanding_house_id
-    #     if is_gm_override and fleet.house_id != effective_commanding_house_id:
-    #         return (
-    #             False,
-    #             f"❌ GM override: Fleet {fleet.commander_name} does not belong to the specified acting house ID {effective_commanding_house_id}.",
-    #             None,
-    #         )
-
-    #     # Allow DOCKED or IDLE, but not SAILING
-    #     if fleet.status not in ["IDLE", "DOCKED", "GARRISONED"]:
-    #         return False, "❌ The fleet must be stationary to disembark troops."
-
-    #     if not fleet.cargo or fleet.cargo.get("troop_count", 0) <= 0:
-    #         return False, "❌ Fleet has no cargo."
-
-    #     # 2. FIND LAND SCAN (Snap Logic)
-    #     # We scan a 3x3 grid around the fleet to find a valid land tile.
-
-    #     best_land_spot = None
-    #     min_dist_sq = float("inf")
-    #     original_x, original_y = int(fleet.location_x), int(fleet.location_y)
-
-    #     # Access the Global Pathfinder Engine
-    #     cost_map = PF_ENGINE.cost_map
-    #     rows, cols = cost_map.shape
-
-    #     # Loop dx, dy (-1 to +1)
-    #     for dx in range(-1, 2):
-    #         for dy in range(-1, 2):
-    #             check_x, check_y = original_x + dx, original_y + dy
-
-    #             # Bounds Check
-    #             if 0 <= check_y < rows and 0 <= check_x < cols:
-    #                 terrain_cost = cost_map[check_y, check_x]
-
-    #                 # Check if tile is Land or Road
-    #                 # (Assuming COSTS["land"] and COSTS["road"] are available or hardcoded)
-    #                 # You can also check "not water" logic
-    #                 is_water = terrain_cost in [
-    #                     COSTS["ocean"],
-    #                     COSTS["coastal_water"],
-    #                     COSTS["port"],
-    #                 ]
-
-    #                 if not is_water:
-    #                     dist_sq = dx * dx + dy * dy
-    #                     # Prefer closest tile
-    #                     if dist_sq < min_dist_sq:
-    #                         min_dist_sq = dist_sq
-    #                         best_land_spot = (check_x, check_y)
-
-    #     # 3. Handle Result
-    #     if not best_land_spot:
-    #         return False, (
-    #             f"❌ **Cannot Disembark Here!**\n"
-    #             f"The fleet is currently at {original_x},{original_y} (Water), and no valid land was found in the adjacent tiles.\n"
-    #             f"Please use `!sail` to move the fleet adjacent to a coast/beach before disembarking."
-    #         )
-
-    #     # 4. Create the Army at the Found Land Spot
-    #     land_x, land_y = best_land_spot
-    #     cargo = fleet.cargo
-
-    #     # Check Fief status for "GARRISONED" vs "IDLE"
-    #     stmt_fief = select(Fief).where(
-    #         Fief.game_id == game_id,
-    #         Fief.location_x == land_x,
-    #         Fief.location_y == land_y,
-    #     )
-    #     fief = (await self.session.execute(stmt_fief)).scalars().first()
-    #     land_status = (
-    #         "GARRISONED"
-    #         if fief and fief.owner_id == effective_commanding_house_id
-    #         else "IDLE"
-    #     )
-
-    #     new_army = Army(
-    #         game_id=fleet.game_id,
-    #         house_id=effective_commanding_house_id,
-    #         army_type="LAND",
-    #         commander_name=cargo.get("commander", "Reformed Host"),
-    #         troop_count=cargo.get("troop_count", 0),
-    #         composition=cargo.get("composition", {}),
-    #         location_x=land_x,  # Snap coord
-    #         location_y=land_y,  # Snap coord
-    #         status=land_status,
-    #     )
-    #     self.session.add(new_army)
-
-    #     # Clear Cargo
-    #     fleet.cargo = None
-
-    #     await self.session.commit()
-
-    #     location_desc = f"{fief.name}" if fief else f"Coord {land_x}, {land_y}"
-
-    #     return (
-    #         True,
-    #         f"✅ **Disembarked!** {new_army.commander_name} ({new_army.troop_count} men) made landfall at **{location_desc}**.",
-    #     )
 
     async def disembark_army(
         self,
@@ -2644,534 +2533,6 @@ class WarfareService:
                         queue.append((nx, ny))
         return None
 
-    # async def sail_fleet(
-    #     self,
-    #     game_id: int,
-    #     user_id: int,
-    #     fleet_id: int,
-    #     ships_input: str,
-    #     dest_name: str,
-    #     units_input: str | None,
-    #     commander: str | None,
-    #     gold_to_carry: int = 0,
-    #     waypoints: str | None = None,
-    #     is_gm_override: bool = False,
-    #     acting_house_id: int | None = None,
-    # ):
-    #     """
-    #     Handles sailing logic.
-    #     - Auto-detects coastal landing spots for inland destinations.
-    #     - Auto-picks up standing armies.
-    #     - Ensures troops embark/disembark correctly on land tiles.
-    #     - Logs both sea and land path segments for interception checks.
-    #     """
-    #     # =================================================================
-    #     # 1. VALIDATION AND SETUP
-    #     # =================================================================
-    #     gm_settings, _ = await self._get_gm_settings_from_game(game_id)
-    #     game = await self.session.get(Game, game_id)
-    #     if not game:
-    #         return False, "❌ Game session not found.", None
-
-    #     ship_capacity = game.ship_capacity
-
-    #     source_fleet = await ArmyRepo.get_army_by_id(self.session, fleet_id)
-    #     if not source_fleet:
-    #         return False, f"❌ Fleet ID {fleet_id} not found.", None
-
-    #     player: GamePlayer | None = None
-    #     player_claimed_house_id: int | None = None
-    #     if not is_gm_override:
-    #         player = await self.session.scalar(
-    #             select(GamePlayer)
-    #             .where(GamePlayer.user_id == user_id, GamePlayer.game_id == game_id)
-    #             .options(selectinload(GamePlayer.house))
-    #         )
-    #         if not player or not player.claimed_house_id:
-    #             return False, "❌ You do not command a house.", None
-    #         player_claimed_house_id = player.claimed_house_id
-
-    #     effective_commanding_house_id: int | None = None
-    #     if is_gm_override:
-    #         if acting_house_id is not None:
-    #             effective_commanding_house_id = acting_house_id
-    #         else:
-    #             effective_commanding_house_id = source_fleet.house_id
-    #     else:
-    #         effective_commanding_house_id = player_claimed_house_id
-
-    #     if effective_commanding_house_id is None:
-    #         return (
-    #             False,
-    #             "❌ Cannot determine the commanding house for this action.",
-    #             None,
-    #         )
-
-    #     if source_fleet.army_type != "SEA":
-    #         return False, "❌ This is not a fleet. Please use `!march`.", None
-    #     if not is_gm_override and not await self._check_command_authority(
-    #         player, source_fleet
-    #     ):
-    #         return (
-    #             False,
-    #             f"❌ You do not have authority over {source_fleet.commander_name}.",
-    #             None,
-    #         )
-
-    #     if is_gm_override and source_fleet.house_id != effective_commanding_house_id:
-    #         return (
-    #             False,
-    #             f"❌ GM override: Fleet {source_fleet.commander_name} does not belong to the specified acting house ID {effective_commanding_house_id}.",
-    #             None,
-    #         )
-
-    #     if source_fleet.status in ["SAILING", "MARCHING"]:
-    #         return False, "❌ This fleet is already moving.", None
-
-    #     # =================================================================
-    #     # 2. RESOLVE DESTINATION & PATHFINDING
-    #     # =================================================================
-    #     origin_name = await self.get_location_name_from_coords(
-    #         game_id, source_fleet.location_x, source_fleet.location_y
-    #     )
-    #     dest_coords_raw = await self._get_location_from_db(game_id, dest_name)
-    #     if not dest_coords_raw:
-    #         return False, f"❌ Destination '{dest_name}' is invalid.", None
-
-    #     start_coords = (source_fleet.location_x, source_fleet.location_y)
-    #     parsed_waypoints = (
-    #         [wp.strip() for wp in waypoints.split(";")] if waypoints else []
-    #     )
-
-    #     # Determine if the user's FINAL destination is water/port or land.
-    #     dest_is_water_or_port = self._is_coord_water_or_port(
-    #         int(dest_coords_raw["x"]), int(dest_coords_raw["y"])
-    #     )
-
-    #     # Variables to store planned route data
-    #     path_data = None
-    #     sea_path_points_for_log = []
-    #     land_path_points_for_log = []
-    #     fleet_final_dest_coords = (dest_coords_raw["x"], dest_coords_raw["y"])
-    #     land_army_start_coords = None
-    #     land_army_final_dest_coords = (dest_coords_raw["x"], dest_coords_raw["y"])
-    #     journey_summary = ""
-
-    #     # Check preliminary cargo need
-    #     temp_total_men = 0
-    #     if source_fleet.cargo:
-    #         temp_total_men = source_fleet.cargo.get("troop_count", 0)
-
-    #     # Decide Journey Type
-    #     # Hybrid if destination is inland OR if destination is water but we have troops to offload
-    #     needs_hybrid_journey = (not dest_is_water_or_port) or (
-    #         dest_is_water_or_port and temp_total_men > 0
-    #     )
-
-    #     # NOTE: If units_input is provided (creating new troops) or picking up troops, total_men will increase.
-    #     # We assume if the user provided 'units_input', they intend to transport them, thus enabling hybrid if needed.
-    #     if units_input and units_input.lower() != "load":
-    #         needs_hybrid_journey = True  # Moving troops implies ability to land
-
-    #     # --- BRANCH A: HYBRID JOURNEY ---
-    #     if needs_hybrid_journey:
-    #         print(
-    #             f"[DEBUG SAIL] Destination {dest_name} requires hybrid journey. Searching for landing zone."
-    #         )
-
-    #         best_water_loc, best_land_loc = self._find_closest_coastal_landing(
-    #             int(dest_coords_raw["x"]), int(dest_coords_raw["y"])
-    #         )
-
-    #         if not best_water_loc:
-    #             return (
-    #                 False,
-    #                 f"❌ Could not find a suitable landing spot near **{dest_name}**. The area may be too far inland or mapped incorrectly.",
-    #                 None,
-    #             )
-
-    #         # 1. Sea Path
-    #         sea_path_data_obj = await PF_ENGINE.find_journey_async(
-    #             start_loc=start_coords,
-    #             end_loc=best_water_loc,
-    #             waypoints=parsed_waypoints,
-    #             travel_mode="sea_only",
-    #             gm_settings=gm_settings,
-    #         )
-    #         if not sea_path_data_obj:
-    #             return False, f"❌ Cannot sail to the coast near {dest_name}.", None
-
-    #         sea_path_points_for_log = sea_path_data_obj["path_points"]
-    #         fleet_final_dest_coords = best_water_loc
-    #         land_army_start_coords = best_land_loc
-
-    #         # 2. Resolve Land Army Destination
-    #         if dest_is_water_or_port:
-    #             # If user targeted water, snap land army final dest to nearest land
-    #             potential_land = self._find_closest_land_to_coord(
-    #                 int(dest_coords_raw["x"]), int(dest_coords_raw["y"]), max_radius=50
-    #             )
-    #             if potential_land:
-    #                 land_army_final_dest_coords = potential_land
-    #             else:
-    #                 # Fallback: stay at landing spot
-    #                 land_army_final_dest_coords = best_land_loc
-    #         else:
-    #             land_army_final_dest_coords = (
-    #                 dest_coords_raw["x"],
-    #                 dest_coords_raw["y"],
-    #             )
-
-    #         # 3. Land Path
-    #         land_path_data_obj = await PF_ENGINE.find_journey_async(
-    #             start_loc=land_army_start_coords,
-    #             end_loc=land_army_final_dest_coords,
-    #             waypoints=[],
-    #             travel_mode="land_only",
-    #             gm_settings=gm_settings,
-    #         )
-    #         if not land_path_data_obj:
-    #             return (
-    #                 False,
-    #                 f"❌ Cannot march from {best_land_loc} to {dest_name}.",
-    #                 None,
-    #             )
-
-    #         land_path_points_for_log = land_path_data_obj["path_points"]
-
-    #         # 4. Combine Data
-    #         path_data = sea_path_data_obj
-    #         # Append land path for image generation, avoiding duplicate point
-    #         if len(land_path_data_obj["path_points"]) > 0:
-    #             path_data["path_points"].extend(land_path_data_obj["path_points"][1:])
-
-    #         path_data["total_distance"] += land_path_data_obj["total_distance"]
-    #         for k, v in land_path_data_obj["terrain_breakdown"].items():
-    #             path_data["terrain_breakdown"][k] = (
-    #                 path_data["terrain_breakdown"].get(k, 0.0) + v
-    #             )
-
-    #         # Image setup
-    #         all_stops = [start_coords, best_water_loc, land_army_final_dest_coords]
-    #         path_data["image"] = await asyncio.to_thread(
-    #             self._generate_path_image, path_data["path_points"], all_stops
-    #         )
-
-    #         landing_name = (
-    #             await self.get_location_name_from_coords(
-    #                 game_id, best_land_loc[0], best_land_loc[1]
-    #             )
-    #             or "the Coast"
-    #         )
-    #         journey_summary = (
-    #             f"Sailing to **{landing_name}**, then marching to **{dest_name}**."
-    #         )
-
-    #     # --- BRANCH B: PURE SEA JOURNEY ---
-    #     else:
-    #         print(
-    #             f"[DEBUG SAIL] Destination {dest_name} is water/port. Pure sea journey."
-    #         )
-    #         path_data = await PF_ENGINE.find_journey_async(
-    #             start_loc=start_coords,
-    #             end_loc=(dest_coords_raw["x"], dest_coords_raw["y"]),
-    #             waypoints=parsed_waypoints,
-    #             travel_mode="sea_only",
-    #             gm_settings=gm_settings,
-    #         )
-    #         if not path_data:
-    #             # Fallback to optimal
-    #             path_data = await PF_ENGINE.find_journey_async(
-    #                 start_loc=start_coords,
-    #                 end_loc=(dest_coords_raw["x"], dest_coords_raw["y"]),
-    #                 waypoints=parsed_waypoints,
-    #                 travel_mode="optimal",
-    #                 gm_settings=gm_settings,
-    #             )
-    #         if not path_data:
-    #             return False, "❌ No viable sea path found.", None
-
-    #         sea_path_points_for_log = path_data["path_points"]
-    #         fleet_final_dest_coords = (dest_coords_raw["x"], dest_coords_raw["y"])
-    #         journey_summary = f"Sailing directly to **{dest_name}**."
-
-    #     # =================================================================
-    #     # 3. DETERMINE CARGO & TROOPS
-    #     # =================================================================
-    #     try:
-    #         ship_amount = (
-    #             int(ships_input)
-    #             if ships_input.strip().lower() != "all"
-    #             else source_fleet.troop_count
-    #         )
-    #         if ship_amount <= 0 or ship_amount > source_fleet.troop_count:
-    #             raise ValueError(f"Invalid ship count.")
-
-    #         total_men_in_cargo = 0
-    #         cargo_payload = None
-
-    #         # A. Recruit New
-    #         if units_input is not None and units_input.lower() != "load":
-    #             # Check Fief ownership at current location
-    #             stmt_loc = select(Fief).where(
-    #                 Fief.game_id == game_id,
-    #                 Fief.location_x == source_fleet.location_x,
-    #                 Fief.location_y == source_fleet.location_y,
-    #                 Fief.owner_id == effective_commanding_house_id,
-    #             )
-    #             if not (await self.session.execute(stmt_loc)).scalars().first():
-    #                 return (
-    #                     False,
-    #                     "❌ You can only draft NEW troops at your own Fiefs.",
-    #                     None,
-    #                 )
-
-    #             parsed_men, specific_comp = await self._parse_units_for_sailing(
-    #                 units_input
-    #             )
-    #             if parsed_men > ship_amount * ship_capacity:
-    #                 raise ValueError(f"Over Capacity.")
-
-    #             cargo_commander = commander
-    #             if not cargo_commander:
-    #                 h_name = (
-    #                     await self.session.get(House, effective_commanding_house_id)
-    #                 ).name
-    #                 cargo_commander = f"Captain of {h_name}"
-
-    #             total_men_in_cargo = parsed_men
-    #             cargo_payload = {
-    #                 "commander": cargo_commander,
-    #                 "troop_count": parsed_men,
-    #                 "composition": specific_comp,
-    #             }
-
-    #         # B. Existing Cargo
-    #         elif source_fleet.cargo and source_fleet.cargo.get("troop_count", 0) > 0:
-    #             total_men_in_cargo = source_fleet.cargo.get("troop_count", 0)
-    #             cargo_payload = copy.deepcopy(source_fleet.cargo)
-
-    #         # C. Pick Up Army
-    #         else:
-    #             ground_army = await self.session.scalar(
-    #                 select(Army).where(
-    #                     Army.game_id == game_id,
-    #                     Army.house_id == effective_commanding_house_id,
-    #                     Army.location_x == source_fleet.location_x,
-    #                     Army.location_y == source_fleet.location_y,
-    #                     Army.army_type == "LAND",
-    #                     Army.status.in_(["IDLE", "GARRISONED"]),
-    #                 )
-    #             )
-    #             if ground_army:
-    #                 if ground_army.troop_count > ship_amount * ship_capacity:
-    #                     raise ValueError("Not enough ships for ground army.")
-    #                 total_men_in_cargo = ground_army.troop_count
-    #                 cargo_payload = {
-    #                     "commander": ground_army.commander_name,
-    #                     "troop_count": ground_army.troop_count,
-    #                     "composition": ground_army.composition,
-    #                 }
-    #                 await self.session.delete(ground_army)  # Picked up
-    #             elif needs_hybrid_journey:
-    #                 # If hybrid journey required but no troops found/loaded, abort.
-    #                 return (
-    #                     False,
-    #                     "❌ Cannot start hybrid journey: No troops on fleet and no army to pick up.",
-    #                     None,
-    #                 )
-
-    #     except ValueError as e:
-    #         return False, f"❌ Input Error: {e}", None
-
-    #     # =================================================================
-    #     # 4. PREPARE FLEET OBJECT
-    #     # =================================================================
-    #     fleet_cmd_name = commander
-    #     if not fleet_cmd_name:
-    #         h_name = (await self.session.get(House, effective_commanding_house_id)).name
-    #         fleet_cmd_name = f"Fleet of {h_name}"
-
-    #     fleet_to_sail = source_fleet
-    #     if ship_amount < source_fleet.troop_count:
-    #         fleet_to_sail = await ArmyRepo.split_army_logic(
-    #             self.session, source_fleet, ship_amount, fleet_cmd_name
-    #         )
-    #     else:
-    #         fleet_to_sail.commander_name = fleet_cmd_name
-
-    #     fleet_to_sail.cargo = cargo_payload
-
-    #     # =================================================================
-    #     # 5. HANDLE GOLD
-    #     # =================================================================
-    #     house_obj = await self.session.get(House, effective_commanding_house_id)
-    #     if gold_to_carry > house_obj.treasury:
-    #         return False, f"❌ Not enough gold in {house_obj.name} treasury.", None
-    #     house_obj.treasury -= gold_to_carry
-    #     fleet_to_sail.treasury = (fleet_to_sail.treasury or 0) + gold_to_carry
-
-    #     # =================================================================
-    #     # 6. JOURNEY EXECUTION
-    #     # =================================================================
-    #     now = datetime.datetime.now(datetime.timezone.utc)
-
-    #     # --- Fleet Movement ---
-    #     # Recalculate duration using the exact sea points
-    #     sea_dist_km = calculate_travel_duration(
-    #         (
-    #             sea_path_data_obj["terrain_breakdown"]
-    #             if "sea_path_data_obj" in locals()
-    #             else {"sea": path_data["terrain_breakdown"].get("sea", 0)}
-    #         ),
-    #         ship_amount,
-    #     )
-    #     fleet_arrival_time = now + datetime.timedelta(seconds=sea_dist_km)
-
-    #     fleet_to_sail.destination_x = fleet_final_dest_coords[0]
-    #     fleet_to_sail.destination_y = fleet_final_dest_coords[1]
-    #     fleet_to_sail.departure_time = now
-    #     fleet_to_sail.arrival_time = fleet_arrival_time
-    #     fleet_to_sail.status = "SAILING"
-
-    #     # Log Fleet Path
-    #     await ArmyRepo.log_march_path(
-    #         self.session,
-    #         fleet_to_sail.army_id,
-    #         game_id,
-    #         sea_path_points_for_log,
-    #         now,
-    #         sea_dist_km,
-    #     )
-
-    #     land_army_obj = None
-    #     final_total_duration = sea_dist_km
-
-    #     # --- Ghost Land Army (Hybrid Only) ---
-    #     if needs_hybrid_journey and total_men_in_cargo > 0:
-    #         # Create Ghost Army
-    #         land_army_obj = await ArmyRepo.create_embarked_army(
-    #             self.session,
-    #             fleet_to_sail,
-    #             land_army_final_dest_coords[0],
-    #             land_army_final_dest_coords[1],
-    #             fleet_arrival_time,  # Departure time
-    #         )
-    #         # Set Start Location (The Coast)
-    #         land_army_obj.location_x = land_army_start_coords[0]
-    #         land_army_obj.location_y = land_army_start_coords[1]
-    #         land_army_obj.status = "MARCHING"
-    #         land_army_obj.original_destination_x = land_army_final_dest_coords[0]
-    #         land_army_obj.original_destination_y = land_army_final_dest_coords[1]
-
-    #         # Recalculate duration using exact land points
-    #         land_dur = calculate_travel_duration(
-    #             land_path_data_obj["terrain_breakdown"], total_men_in_cargo
-    #         )
-    #         land_army_obj.arrival_time = fleet_arrival_time + datetime.timedelta(
-    #             seconds=land_dur
-    #         )
-    #         final_total_duration += land_dur
-
-    #         # Log Land Path
-    #         await ArmyRepo.log_march_path(
-    #             self.session,
-    #             land_army_obj.army_id,
-    #             game_id,
-    #             land_path_points_for_log,
-    #             fleet_arrival_time,
-    #             land_dur,
-    #         )
-
-    #         # Clear Fleet Cargo
-    #         fleet_to_sail.cargo = None
-    #         flag_modified(fleet_to_sail, "cargo")
-
-    #     # =================================================================
-    #     # 7. COMMIT & SCHEDULE TASKS
-    #     # =================================================================
-    #     await self.session.flush()  # Get IDs
-
-    #     fleet_to_sail.task_id = resolve_army_arrival.apply_async(
-    #         args=[fleet_to_sail.army_id], eta=fleet_to_sail.arrival_time
-    #     ).id
-
-    #     if land_army_obj:
-    #         land_army_obj.task_id = resolve_army_arrival.apply_async(
-    #             args=[land_army_obj.army_id], eta=land_army_obj.arrival_time
-    #         ).id
-
-    #     await self.session.commit()
-
-    #     # Interception Checks (Sea Leg)
-    #     collisions = await self.check_interceptions_advanced(
-    #         game_id, fleet_to_sail.army_id, sea_path_points_for_log, now, sea_dist_km
-    #     )
-
-    #     # ... (Interception filtering & scheduling logic remains same as provided earlier) ...
-    #     # Simplified for brevity here, assume you use the logic from previous correct snippet
-    #     unique_enemy_ids = {c["enemy_id"] for c in collisions}
-    #     valid_sea_ids = set()
-    #     if unique_enemy_ids:
-    #         stmt_types = select(Army.army_id).where(
-    #             Army.army_id.in_(unique_enemy_ids), Army.army_type == "SEA"
-    #         )
-    #         valid_sea_ids = set(
-    #             (await self.session.execute(stmt_types)).scalars().all()
-    #         )
-
-    #     first_contact = None
-    #     collisions.sort(key=lambda x: x["time"])
-    #     for col in collisions:
-    #         if col["enemy_id"] in valid_sea_ids:
-    #             first_contact = col
-    #             break
-
-    #     if first_contact:
-    #         # ... schedule initiate_player_interaction ...
-    #         prompt_time = first_contact["time"] - datetime.timedelta(hours=1)
-    #         if prompt_time < now:
-    #             prompt_time = now + datetime.timedelta(seconds=15)
-    #         from app.tasks.light_tasks import initiate_player_interaction
-
-    #         initiate_player_interaction.apply_async(
-    #             args=[
-    #                 game_id,
-    #                 fleet_to_sail.army_id,
-    #                 first_contact["enemy_id"],
-    #                 first_contact["time"],
-    #                 first_contact["coords"][0],
-    #                 first_contact["coords"][1],
-    #             ],
-    #             eta=prompt_time,
-    #         )
-
-    #     await self.session.commit()
-
-    #     # Fog Msg
-    #     fog_msg = await self.get_fog_of_war_message(
-    #         fleet_to_sail, game_id, start_coords, "various"
-    #     )
-    #     if fleet_to_sail.troop_count < FOG_OF_WAR_THRESHOLD:
-    #         fog_msg = None
-
-    #     return (
-    #         True,
-    #         {
-    #             "image": path_data.get("image"),
-    #             "time": format_duration(final_total_duration),
-    #             "commander": fleet_to_sail.commander_name,
-    #             "count": total_men_in_cargo,
-    #             "origin": origin_name or "Sea",
-    #             "destination": dest_name,
-    #             "journey_summary": journey_summary,
-    #             "fleet_id": fleet_to_sail.army_id,
-    #             "land_army_id": land_army_obj.army_id if land_army_obj else None,
-    #             "gold_carried": gold_to_carry,
-    #         },
-    #         fog_msg,
-    #     )
-
     async def sail_fleet(
         self,
         game_id: int,
@@ -3187,12 +2548,13 @@ class WarfareService:
         acting_house_id: int | None = None,
     ):
         """
-        Handles sailing logic.
-        - Auto-detects coastal landing spots for inland destinations.
-        - Auto-picks up standing armies.
-        - Ensures troops embark/disembark correctly on land tiles.
-        - Logs both sea and land path segments for interception checks.
+        Handles sailing logic using the 'Pending March' system.
+        Troops stay on ships until arrival at the landing zone.
         """
+        from sqlalchemy.orm.attributes import (
+            flag_modified,
+        )  # Absolute fix for UnboundLocalError
+
         # =================================================================
         # 1. VALIDATION AND SETUP
         # =================================================================
@@ -3202,57 +2564,30 @@ class WarfareService:
             return False, "❌ Game session not found.", None
 
         ship_capacity = game.ship_capacity
-
         source_fleet = await ArmyRepo.get_army_by_id(self.session, fleet_id)
         if not source_fleet:
             return False, f"❌ Fleet ID {fleet_id} not found.", None
 
-        player: GamePlayer | None = None
-        player_claimed_house_id: int | None = None
+        # Determine authority and effective house
+        player_claimed_house_id = None
         if not is_gm_override:
             player = await self.session.scalar(
-                select(GamePlayer)
-                .where(GamePlayer.user_id == user_id, GamePlayer.game_id == game_id)
-                .options(selectinload(GamePlayer.house))
+                select(GamePlayer).where(
+                    GamePlayer.user_id == user_id, GamePlayer.game_id == game_id
+                )
             )
             if not player or not player.claimed_house_id:
                 return False, "❌ You do not command a house.", None
             player_claimed_house_id = player.claimed_house_id
 
-        effective_commanding_house_id: int | None = None
-        if is_gm_override:
-            if acting_house_id is not None:
-                effective_commanding_house_id = acting_house_id
-            else:
-                effective_commanding_house_id = source_fleet.house_id
-        else:
-            effective_commanding_house_id = player_claimed_house_id
-
-        if effective_commanding_house_id is None:
-            return (
-                False,
-                "❌ Cannot determine the commanding house for this action.",
-                None,
-            )
+        effective_house_id = (
+            acting_house_id if is_gm_override else player_claimed_house_id
+        )
+        if effective_house_id is None:
+            effective_house_id = source_fleet.house_id
 
         if source_fleet.army_type != "SEA":
             return False, "❌ This is not a fleet. Please use `!march`.", None
-        if not is_gm_override and not await self._check_command_authority(
-            player, source_fleet
-        ):
-            return (
-                False,
-                f"❌ You do not have authority over {source_fleet.commander_name}.",
-                None,
-            )
-
-        if is_gm_override and source_fleet.house_id != effective_commanding_house_id:
-            return (
-                False,
-                f"❌ GM override: Fleet {source_fleet.commander_name} does not belong to the specified acting house ID {effective_commanding_house_id}.",
-                None,
-            )
-
         if source_fleet.status in ["SAILING", "MARCHING"]:
             return False, "❌ This fleet is already moving.", None
 
@@ -3271,147 +2606,99 @@ class WarfareService:
             [wp.strip() for wp in waypoints.split(";")] if waypoints else []
         )
 
-        dest_is_water_or_port = self._is_coord_water_or_port(
+        # Check if final destination is a port or deep water
+        dest_is_water = self._is_coord_water_or_port(
             int(dest_coords_raw["x"]), int(dest_coords_raw["y"])
         )
 
-        path_data = None
+        needs_hybrid_journey = not dest_is_water
         sea_path_points_for_log = []
-        land_path_points_for_log = []
+        land_path_data = None
         fleet_final_dest_coords = (dest_coords_raw["x"], dest_coords_raw["y"])
-        land_army_start_coords = None
-        land_army_final_dest_coords = (dest_coords_raw["x"], dest_coords_raw["y"])
         journey_summary = ""
 
-        # --- CORRECTED LOGIC [START] ---
-        # A hybrid journey is required ONLY if the destination is an inland tile.
-        # Sailing to a port, even with troops, should be a direct sea journey.
-        needs_hybrid_journey = not dest_is_water_or_port
-        # --- CORRECTED LOGIC [END] ---
-
-        # --- BRANCH A: HYBRID JOURNEY ---
         if needs_hybrid_journey:
-            print(
-                f"[DEBUG SAIL] Destination {dest_name} requires hybrid journey. Searching for landing zone."
-            )
-
+            # 1. Find a coastal transition point
             best_water_loc, best_land_loc = self._find_closest_coastal_landing(
                 int(dest_coords_raw["x"]), int(dest_coords_raw["y"])
             )
-
             if not best_water_loc:
                 return (
                     False,
-                    f"❌ Could not find a suitable landing spot near **{dest_name}**. The area may be too far inland or mapped incorrectly.",
+                    f"❌ Could not find a suitable landing spot near **{dest_name}**.",
                     None,
                 )
 
-            sea_path_data_obj = await PF_ENGINE.find_journey_async(
+            # 2. Calculate Sea Leg
+            path_data = await PF_ENGINE.find_journey_async(
                 start_loc=start_coords,
                 end_loc=best_water_loc,
                 waypoints=parsed_waypoints,
                 travel_mode="sea_only",
                 gm_settings=gm_settings,
             )
-            if not sea_path_data_obj:
-                return False, f"❌ Cannot sail to the coast near {dest_name}.", None
+            if not path_data:
+                return False, "❌ Cannot find a viable sea route to the coast.", None
 
-            sea_path_points_for_log = sea_path_data_obj["path_points"]
-            fleet_final_dest_coords = best_water_loc
-            land_army_start_coords = best_land_loc
-
-            land_army_final_dest_coords = (
-                dest_coords_raw["x"],
-                dest_coords_raw["y"],
-            )
-
-            land_path_data_obj = await PF_ENGINE.find_journey_async(
-                start_loc=land_army_start_coords,
-                end_loc=land_army_final_dest_coords,
+            # 3. Calculate Land Leg
+            land_path_data = await PF_ENGINE.find_journey_async(
+                start_loc=best_land_loc,
+                end_loc=(dest_coords_raw["x"], dest_coords_raw["y"]),
                 waypoints=[],
                 travel_mode="land_only",
                 gm_settings=gm_settings,
             )
-            if not land_path_data_obj:
+            if not land_path_data:
                 return (
                     False,
-                    f"❌ Cannot march from {best_land_loc} to {dest_name}.",
+                    "❌ Cannot find a land route from the coast to the target.",
                     None,
                 )
 
-            land_path_points_for_log = land_path_data_obj["path_points"]
-
-            path_data = sea_path_data_obj
-            if len(land_path_data_obj["path_points"]) > 0:
-                path_data["path_points"].extend(land_path_data_obj["path_points"][1:])
-
-            path_data["total_distance"] += land_path_data_obj["total_distance"]
-            for k, v in land_path_data_obj["terrain_breakdown"].items():
-                path_data["terrain_breakdown"][k] = (
-                    path_data["terrain_breakdown"].get(k, 0.0) + v
-                )
-
-            all_stops = [start_coords, best_water_loc, land_army_final_dest_coords]
-            path_data["image"] = await asyncio.to_thread(
-                self._generate_path_image, path_data["path_points"], all_stops
-            )
-
-            landing_name = (
-                await self.get_location_name_from_coords(
-                    game_id, best_land_loc[0], best_land_loc[1]
-                )
-                or "the Coast"
-            )
-            journey_summary = (
-                f"Sailing to **{landing_name}**, then marching to **{dest_name}**."
-            )
-
-        # --- BRANCH B: PURE SEA JOURNEY ---
+            sea_path_points_for_log = path_data["path_points"]
+            fleet_final_dest_coords = best_water_loc
+            journey_summary = f"Sailing to the coast, then marching to **{dest_name}**."
         else:
-            print(
-                f"[DEBUG SAIL] Destination {dest_name} is water/port. Pure sea journey."
-            )
+            # Pure Sea Journey
             path_data = await PF_ENGINE.find_journey_async(
                 start_loc=start_coords,
-                end_loc=(dest_coords_raw["x"], dest_coords_raw["y"]),
+                end_loc=fleet_final_dest_coords,
                 waypoints=parsed_waypoints,
                 travel_mode="sea_only",
                 gm_settings=gm_settings,
             )
             if not path_data:
-                path_data = await PF_ENGINE.find_journey_async(
-                    start_loc=start_coords,
-                    end_loc=(dest_coords_raw["x"], dest_coords_raw["y"]),
-                    waypoints=parsed_waypoints,
-                    travel_mode="optimal",
-                    gm_settings=gm_settings,
-                )
-            if not path_data:
                 return False, "❌ No viable sea path found.", None
 
             sea_path_points_for_log = path_data["path_points"]
-            fleet_final_dest_coords = (dest_coords_raw["x"], dest_coords_raw["y"])
             journey_summary = f"Sailing directly to **{dest_name}**."
+
+        # Map Visualization
+        path_data["image"] = await asyncio.to_thread(
+            self._generate_path_image,
+            path_data["path_points"],
+            [start_coords, fleet_final_dest_coords],
+        )
 
         # =================================================================
         # 3. DETERMINE CARGO & TROOPS
         # =================================================================
         try:
-            ship_amount = (
+            ship_count = (
                 int(ships_input)
-                if ships_input.strip().lower() != "all"
+                if ships_input.lower() != "all"
                 else source_fleet.troop_count
             )
-            if ship_amount <= 0 or ship_amount > source_fleet.troop_count:
-                raise ValueError(f"Invalid ship count.")
+            if ship_count <= 0 or ship_count > source_fleet.troop_count:
+                raise ValueError("Invalid ship count.")
 
             total_men_in_cargo = 0
             cargo_payload = None
 
-            # --- FIND LAND ARMY AT SOURCE ---
+            # Look for ground army to pick up
             stmt_land = select(Army).where(
                 Army.game_id == game_id,
-                Army.house_id == effective_commanding_house_id,
+                Army.house_id == effective_house_id,
                 Army.location_x == source_fleet.location_x,
                 Army.location_y == source_fleet.location_y,
                 Army.army_type == "LAND",
@@ -3419,135 +2706,114 @@ class WarfareService:
             )
             ground_army = (await self.session.execute(stmt_land)).scalars().first()
 
-            # --- CASE A: USER SPECIFIED SPECIFIC UNITS (e.g., "10 archers, 20 infantry") ---
             if units_input is not None and units_input.lower() != "load":
+                # CASE A: Manually loading specific units from a garrison
                 if not ground_army:
                     return (
                         False,
-                        "❌ There are no land troops at this location to load into the fleet.",
+                        "❌ No land troops found at this location to load.",
                         None,
                     )
 
                 parsed_men, requested_comp = await self._parse_units_for_sailing(
                     units_input
                 )
-
-                if parsed_men > ship_amount * ship_capacity:
+                if parsed_men > ship_count * ship_capacity:
                     raise ValueError(
-                        f"Over Capacity. Your {ship_amount} ships can only carry {ship_amount * ship_capacity} men."
+                        f"Over Capacity. Ships can only carry {ship_count * ship_capacity} men."
                     )
 
-                # Validate if the ground army has the requested units
-                for unit_type, count in requested_comp.items():
-                    current_count = ground_army.composition.get(unit_type, 0)
-                    if current_count < count:
-                        return (
-                            False,
-                            f"❌ {ground_army.commander_name} does not have enough {unit_type}. (Required: {count}, Available: {current_count})",
-                            None,
-                        )
-
-                # --- DEDUCTION LOGIC ---
+                # Deduct from ground host
                 ground_army.troop_count -= parsed_men
-                for unit_type, count in requested_comp.items():
-                    ground_army.composition[unit_type] -= count
+                for k, v in requested_comp.items():
+                    ground_army.composition[k] = ground_army.composition.get(k, 0) - v
 
-                # Update the ground army or delete it if empty
                 if ground_army.troop_count <= 0:
                     await self.session.delete(ground_army)
                 else:
-                    # Required so SQLAlchemy notices the change in the JSON column
-                    from sqlalchemy.orm.attributes import flag_modified
-
                     flag_modified(ground_army, "composition")
 
                 total_men_in_cargo = parsed_men
                 cargo_payload = {
-                    "commander": commander
-                    or f"Captain of {ground_army.commander_name}",
+                    "commander": commander or f"Host of {ground_army.commander_name}",
                     "troop_count": parsed_men,
                     "composition": requested_comp,
                 }
 
-            # --- CASE B: RE-LOADING EXISTING FLEET CARGO ---
-            elif units_input == "load" or (
-                source_fleet.cargo and source_fleet.cargo.get("troop_count", 0) > 0
-            ):
-                # This handles when ships already have men on them (e.g. from a previous disembark or mid-sea change)
+            elif source_fleet.cargo and source_fleet.cargo.get("troop_count", 0) > 0:
+                # CASE B: Maintain existing cargo (Continuing a journey)
                 total_men_in_cargo = source_fleet.cargo.get("troop_count", 0)
                 cargo_payload = copy.deepcopy(source_fleet.cargo)
 
-            # --- CASE C: AUTO-PICKUP ALL TROOPS (IF NO INPUT SPECIFIED) ---
-            else:
-                if ground_army:
-                    if ground_army.troop_count > ship_amount * ship_capacity:
-                        raise ValueError(
-                            f"Not enough ships to carry the entire army ({ground_army.troop_count} men). Specify a smaller number of units."
-                        )
-
-                    total_men_in_cargo = ground_army.troop_count
-                    cargo_payload = {
-                        "commander": ground_army.commander_name,
-                        "troop_count": ground_army.troop_count,
-                        "composition": ground_army.composition,
-                    }
-                    # Delete the land army because it's now entirely on the ships
-                    await self.session.delete(ground_army)
-
-                elif needs_hybrid_journey:
-                    return (
-                        False,
-                        "❌ Cannot start hybrid journey: No troops on fleet and no army to pick up.",
-                        None,
+            elif ground_army:
+                # CASE C: Auto-pickup everything
+                if ground_army.troop_count > ship_count * ship_capacity:
+                    raise ValueError(
+                        "Not enough ship capacity to pick up the entire army."
                     )
+                total_men_in_cargo = ground_army.troop_count
+                cargo_payload = {
+                    "commander": ground_army.commander_name,
+                    "troop_count": ground_army.troop_count,
+                    "composition": ground_army.composition,
+                }
+                await self.session.delete(ground_army)
 
         except ValueError as e:
             return False, f"❌ Input Error: {e}", None
 
         # =================================================================
-        # 4. PREPARE FLEET OBJECT
+        # 4. PREPARE FLEET & GOLD
         # =================================================================
-        fleet_cmd_name = commander
-        if not fleet_cmd_name:
-            h_name = (await self.session.get(House, effective_commanding_house_id)).name
-            fleet_cmd_name = f"Fleet of {h_name}"
+        house_obj = await self.session.get(House, effective_house_id)
+        if gold_to_carry > (house_obj.treasury or 0):
+            return False, f"❌ House {house_obj.name} treasury insufficient.", None
+
+        house_obj.treasury -= gold_to_carry
 
         fleet_to_sail = source_fleet
-        if ship_amount < source_fleet.troop_count:
+        if ship_count < source_fleet.troop_count:
             fleet_to_sail = await ArmyRepo.split_army_logic(
-                self.session, source_fleet, ship_amount, fleet_cmd_name
+                self.session,
+                source_fleet,
+                ship_count,
+                commander or f"Fleet of {house_obj.name}",
             )
         else:
-            fleet_to_sail.commander_name = fleet_cmd_name
-        fleet_to_sail.cargo = cargo_payload
+            if commander:
+                fleet_to_sail.commander_name = commander
 
-        # =================================================================
-        # 5. HANDLE GOLD
-        # =================================================================
-        house_obj = await self.session.get(House, effective_commanding_house_id)
-        if gold_to_carry > house_obj.treasury:
-            return False, f"❌ Not enough gold in {house_obj.name} treasury.", None
-        house_obj.treasury -= gold_to_carry
+        fleet_to_sail.cargo = cargo_payload
         fleet_to_sail.treasury = (fleet_to_sail.treasury or 0) + gold_to_carry
 
         # =================================================================
-        # 6. JOURNEY EXECUTION
+        # 5. EXECUTION & PENDING MARCH
         # =================================================================
         now = datetime.datetime.now(datetime.timezone.utc)
-        sea_dist_km = calculate_travel_duration(
-            (
-                sea_path_data_obj["terrain_breakdown"]
-                if "sea_path_data_obj" in locals() and sea_path_data_obj
-                else {"sea": path_data["terrain_breakdown"].get("sea", 0)}
-            ),
-            ship_amount,
+        sea_dur = calculate_travel_duration(path_data["terrain_breakdown"], ship_count)
+        arrival = now + datetime.timedelta(seconds=sea_dur)
+
+        fleet_to_sail.destination_x, fleet_to_sail.destination_y = (
+            fleet_final_dest_coords
         )
-        fleet_arrival_time = now + datetime.timedelta(seconds=sea_dist_km)
-        fleet_to_sail.destination_x = fleet_final_dest_coords[0]
-        fleet_to_sail.destination_y = fleet_final_dest_coords[1]
-        fleet_to_sail.departure_time = now
-        fleet_to_sail.arrival_time = fleet_arrival_time
-        fleet_to_sail.status = "SAILING"
+        (
+            fleet_to_sail.status,
+            fleet_to_sail.departure_time,
+            fleet_to_sail.arrival_time,
+        ) = ("SAILING", now, arrival)
+
+        if needs_hybrid_journey and total_men_in_cargo > 0:
+            # We store the land data in cargo instead of creating the army now
+            land_dur = calculate_travel_duration(
+                land_path_data["terrain_breakdown"], total_men_in_cargo
+            )
+            fleet_to_sail.cargo["pending_march"] = {
+                "dest_x": dest_coords_raw["x"],
+                "dest_y": dest_coords_raw["y"],
+                "path": land_path_data["path_points"],
+                "duration": land_dur,
+            }
+            flag_modified(fleet_to_sail, "cargo")
 
         await ArmyRepo.log_march_path(
             self.session,
@@ -3555,110 +2821,31 @@ class WarfareService:
             game_id,
             sea_path_points_for_log,
             now,
-            sea_dist_km,
+            sea_dur,
         )
-        land_army_obj = None
-        final_total_duration = sea_dist_km
 
-        if needs_hybrid_journey and total_men_in_cargo > 0:
-            land_army_obj = await ArmyRepo.create_embarked_army(
-                self.session,
-                fleet_to_sail,
-                land_army_final_dest_coords[0],
-                land_army_final_dest_coords[1],
-                fleet_arrival_time,
-            )
-            land_army_obj.location_x = land_army_start_coords[0]
-            land_army_obj.location_y = land_army_start_coords[1]
-            land_army_obj.status = "MARCHING"
-            land_army_obj.original_destination_x = land_army_final_dest_coords[0]
-            land_army_obj.original_destination_y = land_army_final_dest_coords[1]
-            land_dur = calculate_travel_duration(
-                land_path_data_obj["terrain_breakdown"], total_men_in_cargo
-            )
-            land_army_obj.arrival_time = fleet_arrival_time + datetime.timedelta(
-                seconds=land_dur
-            )
-            final_total_duration += land_dur
-            await ArmyRepo.log_march_path(
-                self.session,
-                land_army_obj.army_id,
-                game_id,
-                land_path_points_for_log,
-                fleet_arrival_time,
-                land_dur,
-            )
-            fleet_to_sail.cargo = None
-            flag_modified(fleet_to_sail, "cargo")
-
-        # =================================================================
-        # 7. COMMIT & SCHEDULE TASKS
-        # =================================================================
+        # Final Commit
         await self.session.flush()
         fleet_to_sail.task_id = resolve_army_arrival.apply_async(
-            args=[fleet_to_sail.army_id], eta=fleet_to_sail.arrival_time
+            args=[fleet_to_sail.army_id], eta=arrival
         ).id
-        if land_army_obj:
-            land_army_obj.task_id = resolve_army_arrival.apply_async(
-                args=[land_army_obj.army_id], eta=land_army_obj.arrival_time
-            ).id
         await self.session.commit()
-        collisions = await self.check_interceptions_advanced(
-            game_id, fleet_to_sail.army_id, sea_path_points_for_log, now, sea_dist_km
-        )
-        unique_enemy_ids = {c["enemy_id"] for c in collisions}
-        valid_sea_ids = set()
-        if unique_enemy_ids:
-            stmt_types = select(Army.army_id).where(
-                Army.army_id.in_(unique_enemy_ids), Army.army_type == "SEA"
-            )
-            valid_sea_ids = set(
-                (await self.session.execute(stmt_types)).scalars().all()
-            )
-        first_contact = None
-        collisions.sort(key=lambda x: x["time"])
-        for col in collisions:
-            if col["enemy_id"] in valid_sea_ids:
-                first_contact = col
-                break
-        if first_contact:
-            prompt_time = first_contact["time"] - datetime.timedelta(hours=1)
-            if prompt_time < now:
-                prompt_time = now + datetime.timedelta(seconds=15)
-            from app.tasks.light_tasks import initiate_player_interaction
 
-            initiate_player_interaction.apply_async(
-                args=[
-                    game_id,
-                    fleet_to_sail.army_id,
-                    first_contact["enemy_id"],
-                    first_contact["time"],
-                    first_contact["coords"][0],
-                    first_contact["coords"][1],
-                ],
-                eta=prompt_time,
-            )
-        await self.session.commit()
-        fog_msg = await self.get_fog_of_war_message(
-            fleet_to_sail, game_id, start_coords, "various"
-        )
-        if fleet_to_sail.troop_count < FOG_OF_WAR_THRESHOLD:
-            fog_msg = None
+        # Final Response Data
+        total_time_secs = sea_dur + (land_dur if needs_hybrid_journey else 0)
         return (
             True,
             {
                 "image": path_data.get("image"),
-                "time": format_duration(final_total_duration),
+                "time": format_duration(total_time_secs),
                 "commander": fleet_to_sail.commander_name,
                 "count": total_men_in_cargo,
                 "origin": origin_name or "Sea",
                 "destination": dest_name,
                 "journey_summary": journey_summary,
-                "fleet_id": fleet_to_sail.army_id,
-                "land_army_id": land_army_obj.army_id if land_army_obj else None,
                 "gold_carried": gold_to_carry,
             },
-            fog_msg,
+            None,
         )
 
     def _debug_get_terrain_type(self, x: int, y: int) -> str:
@@ -3754,14 +2941,15 @@ class WarfareService:
     ):
         """
         Stops a moving army/fleet and re-issues a new move order.
+        Updated to handle the 'Pending March' system and Locked ID notifications.
         """
-        # 1. Standard Checks
+        # 1. Standard Validation
         army_to_redirect = await ArmyRepo.get_army_by_id(self.session, army_id)
         if not army_to_redirect:
             return False, "❌ Army not found.", None
 
-        player: GamePlayer | None = None
-        player_claimed_house_id: int | None = None
+        # Determine authority context
+        player = None
         if not is_gm_override:
             player = await self.session.scalar(
                 select(GamePlayer).where(
@@ -3770,96 +2958,47 @@ class WarfareService:
             )
             if not player or not player.claimed_house_id:
                 return False, "❌ You do not command a house.", None
-            player_claimed_house_id = player.claimed_house_id
 
-        effective_commanding_house_id: int | None = None
-        if is_gm_override:
-            if acting_house_id is not None:
-                effective_commanding_house_id = acting_house_id
-            else:
-                effective_commanding_house_id = army_to_redirect.house_id
-        else:
-            effective_commanding_house_id = player_claimed_house_id
+        # Effective House (The one issuing the order)
+        effective_house_id = (
+            acting_house_id if is_gm_override else player.claimed_house_id
+        )
+        if effective_house_id is None:
+            effective_house_id = army_to_redirect.house_id
 
-        if effective_commanding_house_id is None:
-            return (
-                False,
-                "❌ Cannot determine the commanding house for this action.",
-                None,
-            )
-
-        # Authority check for redirect itself:
+        # Authority check for the specific unit
         if not is_gm_override and not await self._check_command_authority(
             player, army_to_redirect
         ):
             return False, "❌ You do not have authority over this unit.", None
 
-        # If GM is overriding, ensure the army belongs to the specified house.
-        if (
-            is_gm_override
-            and army_to_redirect.house_id != effective_commanding_house_id
-        ):
+        if is_gm_override and army_to_redirect.house_id != effective_house_id:
             return (
                 False,
-                f"❌ GM override: Army {army_to_redirect.commander_name} does not belong to the specified acting house ID {effective_commanding_house_id}.",
+                f"❌ GM override: This unit does not belong to House ID {effective_house_id}.",
                 None,
             )
 
-        # 2. Stop the current movement - pass the GM override
+        # 2. Halt the Current Movement
+        # stop_march handles:
+        # - revoking the task
+        # - calculating interpolated current position
+        # - clearing 'pending_march' from cargo (if SEA)
+        # - clearing MarchLogs (interception trajectories)
         stop_success, stop_msg = await self.stop_march(
             game_id, user_id, army_id, is_gm_override=is_gm_override
         )
 
-        if (
-            not stop_success
-            and "not marching" not in stop_msg
-            and "not sailing" not in stop_msg
-        ):
+        if not stop_success and "not moving" not in stop_msg:
             return False, stop_msg, None
 
-        # Refresh army state after stop
+        # Refresh state to ensure we have the new interpolated coordinates
         await self.session.refresh(army_to_redirect)
-        army_to_redirect.status = "IDLE"
 
-        # ---------------------------------------------------------
-        # CRITICAL FIX: Handle "Ghost Army" Cleanup for Fleets
-        # ---------------------------------------------------------
-        if army_to_redirect.army_type == "SEA":
-            now = datetime.datetime.now(datetime.timezone.utc)
+        # 3. Re-issue the move order based on type
+        # We pass "all" units because we are redirecting the existing stack
 
-            # Find any LAND army belonging to this house that is scheduled
-            # to start marching in the FUTURE. This is our "Ghost".
-            future_armies = await self.session.execute(
-                select(Army).where(
-                    Army.house_id == effective_commanding_house_id,
-                    Army.army_type == "LAND",
-                    Army.status == "MARCHING",
-                    Army.departure_time > now,
-                )
-            )
-            ghost_army = future_armies.scalars().first()
-
-            if ghost_army:
-                # 1. Restore the troops to the Fleet's cargo
-                # (Because sail_fleet moved them out of cargo and into this ghost army)
-                army_to_redirect.cargo = {
-                    "commander": ghost_army.commander_name,
-                    "troop_count": ghost_army.troop_count,
-                    "composition": ghost_army.composition,
-                }
-
-                # 2. Delete the Ghost Army so it doesn't spawn later
-                await self.session.delete(ghost_army)
-                await self.session.flush()  # Apply changes immediately
-                print(
-                    f"DEBUG: Restored cargo and deleted Ghost Army ID {ghost_army.army_id}"
-                )
-
-        # ---------------------------------------------------------
-        # 3. Re-issue the new move order
-        # ---------------------------------------------------------
-
-        # --- Land Army Redirect ---
+        # --- LAND REDIRECT ---
         if army_to_redirect.army_type == "LAND":
             success, result, fog_msg = await self.march_army(
                 game_id=game_id,
@@ -3867,35 +3006,40 @@ class WarfareService:
                 identifier=str(army_id),
                 dest_name=new_dest_name,
                 units_input="all",
-                commander=None,
+                commander=None,  # Keep existing
                 waypoints=new_waypoints,
-                gold_to_carry=0,
+                gold_to_carry=0,  # Already on the army
                 is_gm_override=is_gm_override,
-                acting_house_id=acting_house_id,
+                acting_house_id=effective_house_id,
             )
             if success:
-                result["title"] = "Army Redirected"
+                result["journey_summary"] = (
+                    f"Orders changed: Redirected to **{new_dest_name}**."
+                )
             return success, result, fog_msg
 
-        # --- Fleet Redirect ---
+        # --- SEA REDIRECT ---
         elif army_to_redirect.army_type == "SEA":
+            # Pass units_input=None to ensure it uses existing cargo
             success, result, fog_msg = await self.sail_fleet(
                 game_id=game_id,
                 user_id=user_id,
                 fleet_id=army_id,
                 ships_input="all",
                 dest_name=new_dest_name,
-                units_input=None,
-                commander=None,
+                units_input=None,  # Uses existing cargo
+                commander=None,  # Keep existing
                 waypoints=new_waypoints,
+                gold_to_carry=0,  # Already on the fleet
                 is_gm_override=is_gm_override,
-                acting_house_id=acting_house_id,
+                acting_house_id=effective_house_id,
             )
             if success:
-                result["title"] = "Fleet Redirected"
+                # result['journey_summary'] is already set correctly by sail_fleet
+                pass
             return success, result, fog_msg
 
-        return False, "❌ Invalid army type for redirection.", None
+        return False, "❌ Invalid unit type for redirection.", None
 
     async def occupy_fief(
         self,

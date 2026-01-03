@@ -17,249 +17,18 @@ from app.services.travel_calculator import calculate_travel_duration, format_dur
 from app.tasks.heavy_tasks import process_banner_call
 import os
 from app.services.engine_manager import PF_ENGINE
+import math
+from sqlalchemy.orm.attributes import flag_modified
 
 
 class DiplomacyService:
     def __init__(self, session):
         self.session = session
 
-    async def execute_sea_muster_from_pending_call(self, pending_call_id: int) -> list:
+    async def execute_muster_from_pending_call(self, pending_call_id: int) -> list:
         """
-        The final execution step for naval levies. Takes a pending call, musters fleets
-        based on GM-approved percentages, and returns the results for the player report.
-        """
-        pending_call = await self.session.get(PendingBannerCall, pending_call_id)
-        if not pending_call or pending_call.status != "PENDING_APPROVAL":
-            return []
-
-        game = await self.session.get(Game, pending_call.game_id)
-        rally_fief = await FiefRepo.get_by_name(
-            self.session, game.game_id, pending_call.rally_point_name
-        )
-        if not rally_fief:
-            pending_call.status = "CANCELLED"
-            await self.session.commit()
-            return [
-                f"❌ Muster failed: Rally point '{pending_call.rally_point_name}' no longer exists."
-            ]
-
-        liege_house_id = pending_call.liege_house_id
-        rally_coords = (rally_fief.location_x, rally_fief.location_y)
-
-        sail_results = []
-        gm_settings = {
-            "twins_open": game.twins_open,
-            "rubyford_open": game.rubyford_open,
-            "bitterbridge_open": game.bitterbridge_open,
-            "rivers_impassable": game.rivers_impassable,
-        }
-
-        for item in pending_call.vassal_data:
-            house_id = item["house_id"]
-            house_name = item["house_name"]
-            ships_to_send = int(item["max_ships"] * item["percent"])
-
-            if ships_to_send <= 0:
-                sail_results.append(f"💨 {house_name} will not be sending ships.")
-                continue
-
-            sailing_fleet = await ArmyRepo.muster_fleet_from_garrison(
-                session=self.session,
-                game_id=game.game_id,
-                liege_house_id=liege_house_id,
-                vassal_house_id=house_id,
-                ships_to_muster=ships_to_send,
-                commander_name=f"Levy Fleet of {house_name}",
-            )
-            if not sailing_fleet:
-                sail_results.append(
-                    f"⚠️ {house_name} could not provide a fleet (not enough ships)."
-                )
-                continue
-
-            journey_results = await PF_ENGINE.find_journey_async(
-                start_loc=item["start_location"],
-                end_loc=rally_coords,
-                gm_settings=gm_settings,
-                travel_mode="sea_only",
-            )
-            if journey_results:
-                duration_seconds = calculate_travel_duration(
-                    journey_results["terrain_breakdown"], ships_to_send
-                )
-                travel_time_hours = int(duration_seconds / 3600)
-                now = datetime.datetime.now(datetime.timezone.utc)
-                arrival_time = now + datetime.timedelta(seconds=duration_seconds)
-                (
-                    sailing_fleet.status,
-                    sailing_fleet.destination_x,
-                    sailing_fleet.destination_y,
-                    sailing_fleet.arrival_time,
-                    sailing_fleet.departure_time,
-                ) = ("MARCHING", rally_coords[0], rally_coords[1], arrival_time, now)
-                sail_results.append(
-                    f"✅ **{sailing_fleet.commander_name}** ({ships_to_send} ships) is sailing to **{pending_call.rally_point_name}**. ETA: **{travel_time_hours} hours**."
-                )
-            else:
-                sail_results.append(
-                    f"⚠️ **{sailing_fleet.commander_name}** could not find a sea route to **{pending_call.rally_point_name}** and will remain docked."
-                )
-
-        pending_call.status = "COMPLETED"
-        await self.session.commit()
-        return sail_results
-
-    # async def execute_muster_from_pending_call(self, pending_call_id: int):
-    #     """
-    #     The final execution step. Takes a pending call, musters armies based on GM-approved
-    #     percentages, and returns the results for the player report.
-    #     """
-    #     pending_call = await self.session.get(PendingBannerCall, pending_call_id)
-    #     if not pending_call or pending_call.status != "PENDING_APPROVAL":
-    #         return []  # Or raise an error
-
-    #     game = await self.session.get(Game, pending_call.game_id)
-    #     rally_fief = await FiefRepo.get_by_name(
-    #         self.session, game.game_id, pending_call.rally_point_name
-    #     )
-    #     liege_house_id = pending_call.liege_house_id
-
-    #     march_results = []
-    #     successful_etas_seconds = []
-    #     valid_coord_vassals = []
-    #     zero_coord_vassals = []
-    #     gm_settings = {
-    #         "twins_open": game.twins_open,
-    #         "rubyford_open": game.rubyford_open,
-    #         "bitterbridge_open": game.bitterbridge_open,
-    #         "rivers_impassable": game.rivers_impassable,
-    #     }
-
-    #     # Use the GM-approved vassal_data from the pending call
-    #     for vassal in pending_call.vassal_data:
-    #         fief = await FiefRepo.get_main_fief_for_house(
-    #             self.session, vassal["house_id"]
-    #         )
-    #         if fief and fief.location_x > 0 and fief.location_y > 0:
-    #             valid_coord_vassals.append({"vassal_info": vassal, "fief": fief})
-    #         else:
-    #             zero_coord_vassals.append({"vassal_info": vassal, "fief": fief})
-
-    #     # This logic is mostly moved from your original call_banners command
-    #     for item in valid_coord_vassals:
-    #         vassal_info, start_fief = item["vassal_info"], item["fief"]
-    #         troops_to_send = int(vassal_info["max_troops"] * vassal_info["percent"])
-
-    #         if troops_to_send <= 0:
-    #             march_results.append(
-    #                 f"🍂 {vassal_info['house_name']} has no available troops to send."
-    #             )
-    #             continue
-
-    #         marching_army = await ArmyRepo.muster_from_garrison(
-    #             session=self.session,
-    #             game_id=game.game_id,
-    #             owner_house_id=liege_house_id,
-    #             source_house_id=vassal_info["house_id"],
-    #             troops_to_muster=troops_to_send,
-    #             commander_name=f"{vassal_info['house_name']} Levy",
-    #         )
-    #         if not marching_army:
-    #             march_results.append(
-    #                 f"⚠️ {vassal_info['house_name']} could not muster forces (no valid garrison found)."
-    #             )
-    #             continue
-
-    #         journey_results = await PF_ENGINE.find_journey_async(
-    #             start_loc=(start_fief.location_x, start_fief.location_y),
-    #             end_loc=(rally_fief.location_x, rally_fief.location_y),
-    #             gm_settings=gm_settings,
-    #         )
-    #         if journey_results:
-    #             duration_seconds = calculate_travel_duration(
-    #                 journey_results["terrain_breakdown"], troops_to_send
-    #             )
-    #             travel_time_hours = int(duration_seconds / 3600)
-    #             now = datetime.datetime.now(datetime.timezone.utc)
-    #             arrival_time = now + datetime.timedelta(seconds=duration_seconds)
-    #             (
-    #                 marching_army.status,
-    #                 marching_army.destination_x,
-    #                 marching_army.destination_y,
-    #                 marching_army.arrival_time,
-    #                 marching_army.departure_time,
-    #             ) = (
-    #                 "MARCHING",
-    #                 rally_fief.location_x,
-    #                 rally_fief.location_y,
-    #                 arrival_time,
-    #                 now,
-    #             )
-    #             successful_etas_seconds.append(duration_seconds)
-    #             march_results.append(
-    #                 f"✅ **{vassal_info['house_name']}** is marching to **{pending_call.rally_point_name}**. ETA: **{travel_time_hours} hours**."
-    #             )
-    #         else:
-    #             march_results.append(
-    #                 f"⚠️ The **{vassal_info['house_name']} Levy** could not find a route to **{pending_call.rally_point_name}** and will remain idle."
-    #             )
-
-    #     average_duration_seconds = (
-    #         round(sum(successful_etas_seconds) / len(successful_etas_seconds))
-    #         if successful_etas_seconds
-    #         else 259200
-    #     )
-    #     average_eta_hours = int(average_duration_seconds / 3600)
-    #     for item in zero_coord_vassals:
-    #         vassal_info = item["vassal_info"]
-    #         troops_to_send = int(vassal_info["max_troops"] * vassal_info["percent"])
-
-    #         if troops_to_send <= 0:
-    #             march_results.append(
-    #                 f"🍂 {vassal_info['house_name']} has no available troops to send."
-    #             )
-    #             continue
-    #         marching_army = await ArmyRepo.muster_from_garrison(
-    #             session=self.session,
-    #             game_id=game.game_id,
-    #             owner_house_id=liege_house_id,
-    #             source_house_id=vassal_info["house_id"],
-    #             troops_to_muster=troops_to_send,
-    #             commander_name=f"{vassal_info['house_name']} Levy",
-    #         )
-    #         if not marching_army:
-    #             march_results.append(
-    #                 f"⚠️ {vassal_info['house_name']} could not muster forces (no valid garrison found)."
-    #             )
-    #             continue
-    #         now = datetime.datetime.now(datetime.timezone.utc)
-    #         arrival_time = now + datetime.timedelta(seconds=average_duration_seconds)
-    #         (
-    #             marching_army.status,
-    #             marching_army.destination_x,
-    #             marching_army.destination_y,
-    #             marching_army.arrival_time,
-    #             marching_army.departure_time,
-    #         ) = (
-    #             "MARCHING",
-    #             rally_fief.location_x,
-    #             rally_fief.location_y,
-    #             arrival_time,
-    #             now,
-    #         )
-    #         march_results.append(
-    #             f"✅ The **{vassal_info['house_name']} Levy** is mustering for **{pending_call.rally_point_name}**. ETA: **~{average_eta_hours} hours** (estimated)."
-    #         )
-
-    #     pending_call.status = "COMPLETED"
-    #     await self.session.commit()
-
-    #     return march_results
-
-    async def execute_muster_from_pending_call(self, pending_call_id: int):
-        """
-        The final execution step.
-        FIX: Generates correct composition for SEA units (Ships) vs LAND units (Troops).
+        Final execution step for LAND or SEA levies.
+        Muster troops/ships based on GM-approved percentages and issue movement orders.
         """
         pending_call = await self.session.get(PendingBannerCall, pending_call_id)
         if not pending_call or pending_call.status != "PENDING_APPROVAL":
@@ -267,24 +36,20 @@ class DiplomacyService:
 
         game = await self.session.get(Game, pending_call.game_id)
 
-        # 1. RESOLVE RALLY POINT
+        # 1. Resolve Rally Point
         from app.services.warfare_service import WarfareService
 
         war_service = WarfareService(self.session)
-
         rally_coords_dict = await war_service._get_location_from_db(
             game.game_id, pending_call.rally_point_name
         )
 
         if not rally_coords_dict:
             return [
-                f"❌ **Error:** The rally point '{pending_call.rally_point_name}' is invalid."
+                f"❌ **Error:** Rally point '{pending_call.rally_point_name}' is invalid."
             ]
 
-        target_x = rally_coords_dict["x"]
-        target_y = rally_coords_dict["y"]
-
-        # 2. SETUP
+        target_coords = (rally_coords_dict["x"], rally_coords_dict["y"])
         liege_house_id = pending_call.liege_house_id
         march_results = []
 
@@ -296,133 +61,97 @@ class DiplomacyService:
             "sea_travel_allowed": game.sea_travel_allowed,
         }
 
-        from app.services.travel_calculator import calculate_travel_duration
-        from app.services.engine_manager import PF_ENGINE
-        import math
-        import datetime
-
-        # 3. PROCESS VASSALS
+        # 2. Process Approved Vassals
         for vassal in pending_call.vassal_data:
             house_id = vassal["house_id"]
             house_name = vassal["house_name"]
 
+            # Standardize based on call type
             max_val = (
-                vassal.get("max_ships", 0)
+                vassal.get("max_ships")
                 if pending_call.call_type == "SEA"
-                else vassal.get("max_troops", 0)
+                else vassal.get("max_troops")
             )
-            percent = vassal.get("percent", 0.0)
-            amount = int(max_val * percent)
+            # Handle standard keys from prepare_banner_call update
+            if max_val is None:
+                max_val = vassal.get("max_amount", 0)
+
+            amount = int(max_val * vassal.get("percent", 0.0))
 
             if amount <= 0:
                 march_results.append(f"🍂 **{house_name}** is sending no forces.")
                 continue
 
-            start_x = float(vassal.get("home_x", 0))
-            start_y = float(vassal.get("home_y", 0))
-
-            if start_x == 0 and start_y == 0:
+            start_coords = (
+                float(vassal.get("home_x", 0)),
+                float(vassal.get("home_y", 0)),
+            )
+            if start_coords == (0, 0):
                 march_results.append(
-                    f"⚠️ **{house_name}** skipped (Unknown home location)."
+                    f"⚠️ **{house_name}** skipped (Unknown coordinates)."
                 )
                 continue
 
-            # 4. LOCATE EXISTING ARMY
-            search_statuses = ["GARRISONED", "DOCKED", "IDLE"]
-
+            # 3. Locate Source Army (Garrison or Fleet)
             stmt_army = select(Army).where(
                 Army.game_id == game.game_id,
                 Army.house_id == house_id,
-                Army.status.in_(search_statuses),
+                Army.status.in_(["GARRISONED", "DOCKED", "IDLE"]),
                 Army.army_type == pending_call.call_type,
             )
             candidates = (await self.session.execute(stmt_army)).scalars().all()
 
             found_army = None
             for cand in candidates:
+                # Basic proximity check to ensure we aren't pulling a garrison from across the world
                 if (
                     math.sqrt(
-                        (cand.location_x - start_x) ** 2
-                        + (cand.location_y - start_y) ** 2
+                        (cand.location_x - start_coords[0]) ** 2
+                        + (cand.location_y - start_coords[1]) ** 2
                     )
-                    > 2.0
+                    < 5.0
                 ):
-                    continue
-
-                if pending_call.call_type == "SEA":
-                    # Exception for GARRISONED fleets (allowed on land/castles)
-                    if cand.status == "GARRISONED":
-                        found_army = cand
-                        break
-
-                    # Checks for DOCKED/IDLE fleets (Must be water/port + owned)
-                    if not war_service._is_coord_water_or_port(
-                        int(cand.location_x), int(cand.location_y)
-                    ):
-                        continue
-
-                    stmt_port = select(Fief.owner_id).where(
-                        Fief.game_id == game.game_id,
-                        Fief.location_x == cand.location_x,
-                        Fief.location_y == cand.location_y,
-                    )
-                    pid = (await self.session.execute(stmt_port)).scalar_one_or_none()
-                    if pid not in [house_id, liege_house_id]:
-                        continue
-
-                found_army = cand
-                break
+                    found_army = cand
+                    break
 
             if not found_army:
-                type_str = (
-                    "garrison" if pending_call.call_type == "LAND" else "docked fleet"
-                )
                 march_results.append(
-                    f"⚠️ **{house_name}**: Skipped (No valid {type_str} found at home)."
+                    f"⚠️ **{house_name}**: No valid host found at home."
                 )
                 continue
 
-            # --- DRAFT TROOPS (THE FIX) ---
-            source_composition = {}
+            # 4. Draft and Route
+            # Land ratio vs Sea ships
+            if pending_call.call_type == "SEA":
+                source_comp = {"ships": amount}
+            else:
+                source_comp = {
+                    "infantry": int(amount * 0.6),
+                    "cavalry": int(amount * 0.25),
+                    "archers": int(amount * 0.15),
+                }
 
             if found_army.troop_count > amount:
-                # Splitting the existing army
                 found_army.troop_count -= amount
-
-                # FIX: Generate correct composition type
-                if pending_call.call_type == "SEA":
-                    source_composition = {"ships": amount}
-                else:
-                    # Land Ratio
-                    source_composition = {
-                        "infantry": int(amount * 0.6),
-                        "cavalry": int(amount * 0.25),
-                        "archers": int(amount * 0.15),
-                    }
+                flag_modified(found_army, "composition")
             else:
-                # Taking the whole army
                 amount = found_army.troop_count
-                source_composition = found_army.composition.copy()
+                source_comp = found_army.composition.copy()
                 await self.session.delete(found_army)
 
-            # 5. PATHFINDING
-            travel_mode = (
-                "land_only" if pending_call.call_type == "LAND" else "sea_only"
-            )
-            journey_results = await PF_ENGINE.find_journey_async(
-                start_loc=(start_x, start_y),
-                end_loc=(target_x, target_y),
+            travel_mode = "sea_only" if pending_call.call_type == "SEA" else "land_only"
+            journey = await PF_ENGINE.find_journey_async(
+                start_loc=start_coords,
+                end_loc=target_coords,
                 gm_settings=gm_settings,
                 travel_mode=travel_mode,
             )
 
-            if journey_results:
-                duration_seconds = calculate_travel_duration(
-                    journey_results["terrain_breakdown"], amount
-                )
-                travel_time_hours = int(duration_seconds / 3600)
-                now = datetime.datetime.now(datetime.timezone.utc)
-                arrival_time = now + datetime.timedelta(seconds=duration_seconds)
+            if journey:
+                dur = calculate_travel_duration(journey["terrain_breakdown"], amount)
+                arrival = datetime.datetime.now(
+                    datetime.timezone.utc
+                ) + datetime.timedelta(seconds=dur)
 
                 new_levy = Army(
                     game_id=game.game_id,
@@ -430,255 +159,83 @@ class DiplomacyService:
                     army_type=pending_call.call_type,
                     commander_name=f"Levy of {house_name}",
                     troop_count=amount,
-                    composition=source_composition,
-                    location_x=start_x,
-                    location_y=start_y,
-                    destination_x=target_x,
-                    destination_y=target_y,
-                    status="MARCHING" if travel_mode == "land_only" else "SAILING",
-                    departure_time=now,
-                    arrival_time=arrival_time,
+                    composition=source_comp,
+                    location_x=start_coords[0],
+                    location_y=start_coords[1],
+                    destination_x=target_coords[0],
+                    destination_y=target_coords[1],
+                    status="SAILING" if travel_mode == "sea_only" else "MARCHING",
+                    arrival_time=arrival,
+                    departure_time=datetime.datetime.now(datetime.timezone.utc),
                 )
                 self.session.add(new_levy)
                 await self.session.flush()
 
                 from app.tasks.light_tasks import resolve_army_arrival
 
-                task = resolve_army_arrival.apply_async(
-                    args=[new_levy.army_id], eta=arrival_time
-                )
-                new_levy.task_id = task.id
-
+                new_levy.task_id = resolve_army_arrival.apply_async(
+                    args=[new_levy.army_id], eta=arrival
+                ).id
                 march_results.append(
-                    f"✅ **{house_name}** (Levy) is moving to rally point. ETA: **{travel_time_hours}h**."
+                    f"✅ **{house_name}** (Levy) is moving to rally point. ETA: **{int(dur/3600)}h**."
                 )
             else:
-                new_levy = Army(
-                    game_id=game.game_id,
-                    house_id=liege_house_id,
-                    army_type=pending_call.call_type,
-                    commander_name=f"Levy of {house_name}",
-                    troop_count=amount,
-                    composition=source_composition,
-                    location_x=start_x,
-                    location_y=start_y,
-                    status="GARRISONED" if travel_mode == "land_only" else "DOCKED",
+                march_results.append(
+                    f"⚠️ **{house_name}** raised but stuck (No Path found)."
                 )
-                self.session.add(new_levy)
-                march_results.append(f"⚠️ **{house_name}** raised but stuck (No Path).")
 
-        # 6. CLEANUP
         pending_call.status = "COMPLETED"
         await self.session.commit()
-
         return march_results
 
-    # async def prepare_banner_call(
-    #     self,
-    #     game_id: int,
-    #     liege_discord_id: int | None = None,
-    #     acting_house_id: int | None = None,
-    #     is_gm_override: bool = False,
-    # ):
-    #     """
-    #     Phase 1: Gathers vassal data.
-    #     - SEPARATES Players (for notification) from NPCs (for automatic marching).
-    #     - Now supports GM override to prepare a call for an NPC house.
-    #     """
-    #     # Determine the effective liege house based on GM override or player's discord_id
-    #     liege_house: House | None = None
-    #     liege_player: GamePlayer | None = None
-
-    #     if is_gm_override and acting_house_id is not None:
-    #         liege_house = await self.session.get(House, acting_house_id)
-    #         if not liege_house:
-    #             return False, [], []  # Specified NPC house not found
-    #         # For GM override, create a dummy player object for authority checks
-    #         liege_player = GamePlayer(
-    #             game_id=game_id,
-    #             user_id=0,
-    #             claimed_house_id=acting_house_id,
-    #             is_primary=True,
-    #         )
-    #         liege_player.house = liege_house  # Link the house object for access
-    #     elif liege_discord_id is not None:
-    #         stmt_p = (
-    #             select(GamePlayer)
-    #             .join(User, GamePlayer.user_id == User.user_id)
-    #             .where(
-    #                 User.discord_id == liege_discord_id,
-    #                 GamePlayer.game_id == game_id,
-    #                 GamePlayer.is_primary == True,
-    #             )
-    #             .options(
-    #                 selectinload(GamePlayer.house), selectinload(GamePlayer.character)
-    #             )
-    #         )
-    #         liege_player = (await self.session.execute(stmt_p)).scalars().first()
-    #         if not liege_player or not liege_player.house:
-    #             return False, [], []
-    #         liege_house = liege_player.house
-    #     else:
-    #         return False, [], []  # No way to identify the liege
-
-    #     # Get Diplomacy Stat (for NPC calculations)
-    #     diplomacy_stat = 10
-    #     if (
-    #         liege_player.character and liege_player.character.skills
-    #     ):  # Use liege_player's character
-    #         diplomacy_stat = int(liege_player.character.skills.get("diplomacy", 10))
-    #     # If liege_player is a dummy (GM override without character), default to 10.
-    #     elif is_gm_override and not liege_player.character:
-    #         diplomacy_stat = 10
-
-    #     # Find all vassals
-    #     stmt_v = select(House).where(
-    #         House.game_id == game_id,
-    #         House.liege_id == liege_house.house_id,
-    #         House.is_ruined == False,
-    #     )
-    #     vassals = (await self.session.execute(stmt_v)).scalars().all()
-
-    #     vassal_data = []  # List for NPCs (GM will approve these)
-    #     player_vassals = []  # List for Players (Bot will DM these)
-
-    #     # Process each vassal
-    #     for v in vassals:
-    #         # Check if this vassal house has a PLAYER owner
-    #         stmt_owner = (
-    #             select(GamePlayer)
-    #             .join(User)
-    #             .where(
-    #                 GamePlayer.game_id == game_id,
-    #                 GamePlayer.claimed_house_id == v.house_id,
-    #                 GamePlayer.is_primary == True,
-    #             )
-    #             .options(selectinload(GamePlayer.user))
-    #         )
-    #         owner_player = (await self.session.execute(stmt_owner)).scalars().first()
-
-    #         # --- BRANCH A: PLAYER VASSAL ---
-    #         if owner_player and owner_player.user:
-    #             player_vassals.append(
-    #                 {
-    #                     "house_name": v.name,
-    #                     "user_id": owner_player.user.discord_id,
-    #                     "house_id": v.house_id,
-    #                 }
-    #             )
-    #             continue
-
-    #         # --- BRANCH B: NPC VASSAL ---
-    #         # Calculate troops for NPC
-    #         stmt_a = select(func.sum(Army.troop_count)).where(
-    #             Army.house_id == v.house_id,
-    #             or_(Army.status == "GARRISONED", Army.status == "IDLE"),
-    #         )
-    #         total_troops = (await self.session.execute(stmt_a)).scalar() or 0
-
-    #         # Calculate NPC Logic/Score
-    #         score = 30 + (diplomacy_stat * 2)
-
-    #         # Regional Bonus Check
-    #         stmt_vf = select(Fief).where(Fief.owner_id == v.house_id).limit(1)
-    #         stmt_lf = select(Fief).where(Fief.owner_id == liege_house.house_id).limit(1)
-    #         vf = (await self.session.execute(stmt_vf)).scalars().first()
-    #         lf = (await self.session.execute(stmt_lf)).scalars().first()
-
-    #         if vf and lf and vf.region == lf.region:
-    #             score += 30
-    #         if liege_house.treasury > 5000:
-    #             score += 10
-
-    #         # Determine % of troops to send
-    #         percent = 0.0
-    #         if score >= 80:
-    #             percent = 0.90
-    #         elif score >= 60:
-    #             percent = 0.70
-    #         elif score >= 40:
-    #             percent = 0.30
-
-    #         if total_troops == 0:
-    #             percent = 0.0
-
-    #         vassal_data.append(
-    #             {"house": v, "troops": total_troops, "percent": percent, "score": score}
-    #         )
-
-    #     return True, vassal_data, player_vassals
-
     async def prepare_banner_call(
-        self,
-        game_id: int,
-        liege_discord_id: int | None = None,
-        acting_house_id: int | None = None,
-        is_gm_override: bool = False,
+        self, game_id, liege_discord_id=None, acting_house_id=None, is_gm_override=False
     ):
-        """
-        Phase 1: Gathers vassal data using RECURSIVE logic.
-        - Aggregates NPC sub-vassals into the Direct Vassal's count.
-        - Identifies Player sub-vassals for notification.
-        - Returns 'max_amount' key to match the command expectation.
-        """
-        # 1. IDENTIFY LIEGE
-        liege_house: House | None = None
-        liege_player: GamePlayer | None = None
+        """Phase 1: Gather Land Vassals and their Locked Channel IDs recursively."""
+        liege_house, liege_player = await self._get_caller_context(
+            game_id, liege_discord_id, acting_house_id, is_gm_override
+        )
+        if not liege_house:
+            return False, "❌ House not found.", []
 
-        if is_gm_override and acting_house_id is not None:
-            liege_house = await self.session.get(House, acting_house_id)
-            if not liege_house:
-                return False, [], []
-            liege_player = GamePlayer(
-                game_id=game_id,
-                user_id=0,
-                claimed_house_id=acting_house_id,
-                is_primary=True,
-            )
-            liege_player.house = liege_house
-        elif liege_discord_id is not None:
-            stmt_p = (
-                select(GamePlayer)
-                .join(User, GamePlayer.user_id == User.user_id)
-                .where(
-                    User.discord_id == liege_discord_id,
-                    GamePlayer.game_id == game_id,
-                    GamePlayer.is_primary == True,
-                )
-                .options(
-                    selectinload(GamePlayer.house), selectinload(GamePlayer.character)
-                )
-            )
-            liege_player = (await self.session.execute(stmt_p)).scalars().first()
-            if not liege_player or not liege_player.house:
-                return False, [], []
-            liege_house = liege_player.house
-        else:
-            return False, [], []
+        # Landed Lord Check
+        stmt_land = select(Fief.fief_id).where(Fief.owner_id == liege_house.house_id)
+        if (
+            not (await self.session.execute(stmt_land)).scalars().first()
+            and not is_gm_override
+        ):
+            return False, "❌ You have no land and therefore no banners to call.", []
 
-        # 2. HELPER: RECURSIVE TREE WALKER
-        # 2. HELPER: RECURSIVE TREE WALKER
         async def process_house_tree(house_obj):
-            """
-            Returns: (total_troops, breakdown_names_list, notifications_list)
-            """
-            # A. Check for Player Owner (JOIN Character to get the name for the quarters channel)
+            # Check for Player Owner and fetch locked ID
             stmt_owner = (
-                select(User, Character.name)
-                .join(GamePlayer, User.user_id == GamePlayer.user_id)
-                .outerjoin(Character, GamePlayer.character_id == Character.char_id)
+                select(User.discord_id, Character.name, GamePlayer.private_channel_id)
+                .join(GamePlayer)
+                .outerjoin(Character)
                 .where(
                     GamePlayer.game_id == game_id,
                     GamePlayer.claimed_house_id == house_obj.house_id,
-                    GamePlayer.is_primary == True,
                 )
             )
-            result = (await self.session.execute(stmt_owner)).first()
+            owner_res = (await self.session.execute(stmt_owner)).first()
 
-            if result:
-                owner_user, char_name = result
-                # Stop recursion for players.
-                # IMPORTANT: Use 'user_id' and 'character_name' to match your Command logic
+            if owner_res:
+                disc_id, char_name, chan_id = owner_res
+                # Filter out landless courtiers
+                v_land = (
+                    (
+                        await self.session.execute(
+                            select(Fief.fief_id).where(
+                                Fief.owner_id == house_obj.house_id
+                            )
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                if not v_land:
+                    return 0, [], []
+
                 return (
                     0,
                     [],
@@ -686,273 +243,73 @@ class DiplomacyService:
                         {
                             "house_name": house_obj.name,
                             "character_name": char_name,
-                            "user_id": owner_user.discord_id,
+                            "user_id": disc_id,
+                            "private_channel_id": chan_id,  # LOCKED ID
                         }
                     ],
                 )
 
-            # B. NPC: Calculate Base Troops (Garrison + Idle)
+            # NPC Calculation
             stmt_a = select(func.sum(Army.troop_count)).where(
                 Army.house_id == house_obj.house_id,
                 Army.army_type == "LAND",
-                or_(Army.status == "GARRISONED", Army.status == "IDLE"),
+                Army.status.in_(["GARRISONED", "IDLE"]),
             )
-            base_troops = (await self.session.execute(stmt_a)).scalar() or 0
+            tree_troops = (await self.session.execute(stmt_a)).scalar() or 0
 
-            # C. Recurse into Sub-Vassals
+            tree_breakdown, tree_notifs = [], []
             stmt_sub = select(House).where(
-                House.liege_id == house_obj.house_id,
-                House.game_id == game_id,
-                House.is_ruined == False,
+                House.liege_id == house_obj.house_id, House.is_ruined == False
             )
-            sub_vassals = (await self.session.execute(stmt_sub)).scalars().all()
-
-            tree_troops = base_troops
-            tree_breakdown = []
-            tree_notifs = []
-
-            for sub in sub_vassals:
+            for sub in (await self.session.execute(stmt_sub)).scalars().all():
                 s_troops, s_names, s_notifs = await process_house_tree(sub)
-
-                if s_troops > 0:
-                    tree_troops += s_troops
-                    tree_breakdown.append(sub.name)
-
+                tree_troops += s_troops
+                tree_breakdown.extend(s_names if s_troops > 0 else [])
                 tree_notifs.extend(s_notifs)
 
             return tree_troops, tree_breakdown, tree_notifs
 
-        # 3. EXECUTE ON DIRECT VASSALS
-        stmt_direct = select(House).where(
-            House.game_id == game_id,
-            House.liege_id == liege_house.house_id,
-            House.is_ruined == False,
+        # Execute walk
+        npc_data, player_notifs = [], []
+        dip_stat = (
+            int(liege_player.character.skills.get("diplomacy", 10))
+            if liege_player and liege_player.character
+            else 10
         )
-        direct_vassals = (await self.session.execute(stmt_direct)).scalars().all()
 
-        npc_data_list = []
-        all_player_notifications = []
-
-        # Diplomacy Stat for calculation
-        diplomacy_stat = 10
-        if liege_player.character and liege_player.character.skills:
-            diplomacy_stat = int(liege_player.character.skills.get("diplomacy", 10))
-        elif is_gm_override and not liege_player.character:
-            diplomacy_stat = 10
-
-        for vassal in direct_vassals:
-            troops, breakdown_list, notifications = await process_house_tree(vassal)
-
-            all_player_notifications.extend(notifications)
-
-            # If troops > 0, it means the Direct Vassal is an NPC (or has NPC vassals contributing)
+        stmt_direct = select(House).where(
+            House.liege_id == liege_house.house_id, House.is_ruined == False
+        )
+        for vassal in (await self.session.execute(stmt_direct)).scalars().all():
+            troops, breakdown, notifs = await process_house_tree(vassal)
+            player_notifs.extend(notifs)
             if troops > 0:
-                # Find Home Coordinates
-                stmt_fief = (
+                stmt_home = (
                     select(Fief)
-                    .where(Fief.owner_id == vassal.house_id, Fief.game_id == game_id)
+                    .where(Fief.owner_id == vassal.house_id)
                     .order_by(Fief.base_income.desc())
                     .limit(1)
                 )
+                home = (await self.session.execute(stmt_home)).scalars().first()
 
-                home_fief = (await self.session.execute(stmt_fief)).scalars().first()
-                h_x = home_fief.location_x if home_fief else 0.0
-                h_y = home_fief.location_y if home_fief else 0.0
-
-                # Score Logic
-                score = 30 + (diplomacy_stat * 2)
-                if liege_house.treasury > 5000:
-                    score += 10
-
-                percent = 0.0
-                if score >= 80:
-                    percent = 0.90
-                elif score >= 60:
-                    percent = 0.70
-                elif score >= 40:
-                    percent = 0.30
-
-                # Name formatting
-                display_name = vassal.name
-                breakdown_str = ""
-                if breakdown_list:
-                    display_name += "*"
-                    breakdown_str = ", ".join(breakdown_list)
-
-                npc_data_list.append(
+                score = 30 + (dip_stat * 2) + (10 if liege_house.treasury > 5000 else 0)
+                npc_data.append(
                     {
                         "house_id": vassal.house_id,
-                        "house_name": display_name,
-                        "max_amount": troops,  # <--- THIS FIXES YOUR KEYERROR
-                        "percent": percent,
-                        "home_x": h_x,
-                        "home_y": h_y,
-                        "breakdown": breakdown_str,
+                        "house_name": vassal.name,
+                        "max_amount": troops,
+                        "percent": (
+                            0.9
+                            if score >= 80
+                            else 0.7 if score >= 60 else 0.3 if score >= 40 else 0.0
+                        ),
+                        "home_x": home.location_x if home else 0,
+                        "home_y": home.location_y if home else 0,
+                        "breakdown": ", ".join(breakdown),
                     }
                 )
 
-        return True, npc_data_list, all_player_notifications
-
-    # async def prepare_recursive_banner_call(
-    #     self,
-    #     game_id: int,
-    #     liege_discord_id: int | None = None,
-    #     acting_house_id: int | None = None,
-    #     is_gm_override: bool = False,
-    #     call_type: str = "LAND",  # "LAND" or "SEA"
-    # ):
-    #     """
-    #     Robust Recursive Muster System.
-    #     Handles nested vassal trees, player notifications deep in the tree,
-    #     and aggregation of NPC sub-vassals into a combined levy.
-    #     """
-    #     # 1. IDENTIFY LIEGE
-    #     liege_house = None
-    #     if is_gm_override and acting_house_id:
-    #         liege_house = await self.session.get(House, acting_house_id)
-    #     elif liege_discord_id:
-    #         stmt = (
-    #             select(GamePlayer)
-    #             .join(User)
-    #             .where(
-    #                 User.discord_id == liege_discord_id,
-    #                 GamePlayer.game_id == game_id,
-    #                 GamePlayer.is_primary == True,
-    #             )
-    #             .options(selectinload(GamePlayer.house))
-    #         )
-    #         player = (await self.session.execute(stmt)).scalars().first()
-    #         if player:
-    #             liege_house = player.house
-
-    #     if not liege_house:
-    #         return False, [], []
-
-    #     # 2. HELPER: Recursive function to process a House
-    #     # Returns: (troop_count_sum, breakdown_string, list_of_players_to_notify)
-    #     async def process_house_tree(house_obj):
-    #         # A. Check if this house is a PLAYER
-    #         stmt_owner = (
-    #             select(User)
-    #             .join(GamePlayer)
-    #             .where(
-    #                 GamePlayer.claimed_house_id == house_obj.house_id,
-    #                 GamePlayer.game_id == game_id,
-    #                 GamePlayer.is_primary == True,
-    #             )
-    #         )
-    #         player_user = (await self.session.execute(stmt_owner)).scalars().first()
-
-    #         if player_user:
-    #             # IT IS A PLAYER: Stop recursion here.
-    #             # We return 0 troops (we don't steal them) and the player ID to notify.
-    #             return 0, "", [{"name": house_obj.name, "id": player_user.discord_id}]
-
-    #         # B. IT IS AN NPC: Calculate base troops
-    #         base_troops = 0
-
-    #         if call_type == "LAND":
-    #             # Look for Garrison or Idle Land Armies
-    #             stmt_troops = select(func.sum(Army.troop_count)).where(
-    #                 Army.house_id == house_obj.house_id,
-    #                 Army.army_type == "LAND",
-    #                 Army.status.in_(["GARRISONED", "IDLE"]),
-    #             )
-    #             base_troops = (await self.session.execute(stmt_troops)).scalar() or 0
-
-    #             # Logic: If no army exists, estimate manpower (optional fallback)
-    #             # For strictness, we might keep it 0 if no garrison exists.
-    #             # Let's assume we use the strict logic: 0 if no army.
-
-    #         elif call_type == "SEA":
-    #             # Look for Docked/Idle Fleets at owned ports
-    #             # Simplified check for preparation phase
-    #             stmt_ships = select(func.sum(Army.troop_count)).where(
-    #                 Army.house_id == house_obj.house_id,
-    #                 Army.army_type == "SEA",
-    #                 Army.status.in_(["DOCKED", "IDLE"]),
-    #             )
-    #             base_troops = (await self.session.execute(stmt_ships)).scalar() or 0
-
-    #         # C. RECURSE: Find vassals of this NPC
-    #         stmt_vassals = select(House).where(
-    #             House.liege_id == house_obj.house_id,
-    #             House.game_id == game_id,
-    #             House.is_ruined == False,
-    #         )
-    #         sub_vassals = (await self.session.execute(stmt_vassals)).scalars().all()
-
-    #         total_tree_troops = base_troops
-    #         tree_breakdown = []  # List of names contributed
-    #         tree_notifications = []
-
-    #         for sub in sub_vassals:
-    #             s_troops, s_breakdown, s_notifs = await process_house_tree(sub)
-
-    #             # Aggregate Logic
-    #             if s_troops > 0:
-    #                 total_tree_troops += s_troops
-    #                 # We don't add full breakdown string, just the name to keep it clean
-    #                 tree_breakdown.append(sub.name)
-
-    #             tree_notifications.extend(s_notifs)
-
-    #         # Format breakdown string for display
-    #         final_breakdown_str = ""
-    #         if tree_breakdown:
-    #             final_breakdown_str = f" (Includes: {', '.join(tree_breakdown)})"
-
-    #         return total_tree_troops, final_breakdown_str, tree_notifications
-
-    #     # 3. EXECUTE ON DIRECT VASSALS
-    #     stmt_direct = select(House).where(
-    #         House.liege_id == liege_house.house_id,
-    #         House.game_id == game_id,
-    #         House.is_ruined == False,
-    #     )
-    #     direct_vassals = (await self.session.execute(stmt_direct)).scalars().all()
-
-    #     npc_data_list = []
-    #     all_player_notifications = []
-
-    #     for vassal in direct_vassals:
-    #         # We call the recursive function on the direct vassal
-    #         troops, breakdown, notifications = await process_house_tree(vassal)
-
-    #         # Collect player notifications found anywhere in this branch
-    #         all_player_notifications.extend(notifications)
-
-    #         # If the direct vassal ended up returning troops, it means it's an NPC (or tree of NPCs)
-    #         if troops > 0:
-    #             # Get Coordinates
-    #             stmt_fief = (
-    #                 select(Fief)
-    #                 .where(Fief.owner_id == vassal.house_id, Fief.game_id == game_id)
-    #                 .order_by(Fief.base_income.desc())
-    #                 .limit(1)
-    #             )
-    #             home_fief = (await self.session.execute(stmt_fief)).scalars().first()
-
-    #             if home_fief:
-    #                 # Calculate Stats (Diplomacy etc) - Simplified default for now
-    #                 percent = 0.5
-
-    #                 is_combined = "*" if breakdown else ""
-
-    #                 npc_data_list.append(
-    #                     {
-    #                         "house_id": vassal.house_id,
-    #                         "house_name": f"{vassal.name}{is_combined}",  # Add * if combined
-    #                         "real_name": vassal.name,
-    #                         "max_amount": troops,
-    #                         "percent": percent,
-    #                         "home_x": home_fief.location_x,
-    #                         "home_y": home_fief.location_y,
-    #                         "breakdown": breakdown,  # Store for context
-    #                     }
-    #                 )
-
-    #     return True, npc_data_list, all_player_notifications
+        return True, npc_data, player_notifs
 
     async def disband_levies(self, game_id: int, liege_user_id: int):
         """
@@ -1057,138 +414,7 @@ class DiplomacyService:
             return 5
         return 6
 
-    # async def prepare_sea_levy_call(
-    #     self,
-    #     game_id: int,
-    #     liege_discord_id: int | None = None,
-    #     acting_house_id: int | None = None,
-    #     is_gm_override: bool = False,
-    # ):
-    #     """
-    #     Gathers vassal data for a naval levy call, focusing only on vassals
-    #     with garrisoned fleets. Now supports GM override.
-    #     """
-    #     # Determine the effective liege house based on GM override or player's discord_id
-    #     liege_house: House | None = None
-    #     liege_player: GamePlayer | None = None
-
-    #     if is_gm_override and acting_house_id is not None:
-    #         liege_house = await self.session.get(House, acting_house_id)
-    #         if not liege_house:
-    #             return False, [], []  # Specified NPC house not found
-    #         liege_player = GamePlayer(
-    #             game_id=game_id,
-    #             user_id=0,
-    #             claimed_house_id=acting_house_id,
-    #             is_primary=True,
-    #         )
-    #         liege_player.house = liege_house  # Link the house object for access
-    #     elif liege_discord_id is not None:
-    #         stmt_p = (
-    #             select(GamePlayer)
-    #             .join(User, GamePlayer.user_id == User.user_id)
-    #             .where(
-    #                 User.discord_id == liege_discord_id, GamePlayer.game_id == game_id
-    #             )
-    #             .options(
-    #                 selectinload(GamePlayer.house), selectinload(GamePlayer.character)
-    #             )
-    #         )
-    #         liege_player = (await self.session.execute(stmt_p)).scalars().first()
-    #         if not liege_player or not liege_player.house:
-    #             return False, [], []
-    #         liege_house = liege_player.house
-    #     else:
-    #         return False, [], []  # No way to identify the liege
-
-    #     # Get Liege's stats (same as land version)
-    #     diplomacy_stat = 10
-    #     if liege_player.character and liege_player.character.skills:
-    #         diplomacy_stat = int(liege_player.character.skills.get("diplomacy", 10))
-    #     elif is_gm_override and not liege_player.character:
-    #         diplomacy_stat = 10
-
-    #     # Find all non-ruined vassals (same as land version)
-    #     stmt_v = select(House).where(
-    #         House.game_id == game_id,
-    #         House.liege_id == liege_house.house_id,
-    #         House.is_ruined == False,
-    #     )
-    #     vassals = (await self.session.execute(stmt_v)).scalars().all()
-
-    #     vassal_data = []
-    #     player_vassals = []
-
-    #     # Process each vassal: Separate players and check for fleets
-    #     for v in vassals:
-    #         # Check if this vassal is a player (same as land version)
-    #         stmt_owner = (
-    #             select(User)
-    #             .join(GamePlayer, User.user_id == GamePlayer.user_id)
-    #             .where(
-    #                 GamePlayer.game_id == game_id,
-    #                 GamePlayer.claimed_house_id == v.house_id,
-    #                 GamePlayer.is_primary == True,
-    #             )
-    #         )
-    #         owner_user = (await self.session.execute(stmt_owner)).scalars().first()
-
-    #         # CORE NAVAL LOGIC
-    #         # Find their main garrisoned fleet to determine ship count and starting location
-    #         stmt_fleet = (
-    #             select(Army)
-    #             .where(
-    #                 Army.house_id == v.house_id,
-    #                 Army.army_type == "SEA",
-    #                 or_(Army.status == "GARRISONED", Army.status == "IDLE"),
-    #             )
-    #             .order_by(Army.troop_count.desc())
-    #             .limit(1)
-    #         )
-
-    #         main_fleet = (await self.session.execute(stmt_fleet)).scalars().first()
-
-    #         # If they are a player vassal, notify them regardless of their fleet status
-    #         if owner_user:
-    #             player_vassals.append(
-    #                 {"house_name": v.name, "discord_id": owner_user.discord_id}
-    #             )
-    #             continue
-
-    #         # If it's an NPC BUT they have no fleet, they cannot answer the call. Skip them.
-    #         if not main_fleet or main_fleet.troop_count == 0:
-    #             continue
-
-    #         # Calculate Loyalty and Percentage (same logic, but for ships)
-    #         total_ships = main_fleet.troop_count
-    #         start_location = (main_fleet.location_x, main_fleet.location_y)
-
-    #         score = 30 + (diplomacy_stat * 2)
-    #         # Add other loyalty factors if desired (regional bonus, etc.)
-
-    #         percent = 0.0
-    #         if score >= 80:
-    #             percent = 0.90
-    #         elif score >= 60:
-    #             percent = 0.70
-    #         elif score >= 40:
-    #             percent = 0.30
-    #         if total_ships == 0:
-    #             percent = 0.0
-
-    #         vassal_data.append(
-    #             {
-    #                 "house": v,
-    #                 "ships": total_ships,
-    #                 "percent": percent,
-    #                 "score": score,
-    #                 "start_location": start_location,
-    #                 "source_fleet_id": main_fleet.army_id,
-    #             }
-    #         )
-
-    #     return True, vassal_data, player_vassals
-    async def prepare_sea_levy_call(
+    async def _get_caller_context(
         self,
         game_id: int,
         liege_discord_id: int | None = None,
@@ -1196,18 +422,19 @@ class DiplomacyService:
         is_gm_override: bool = False,
     ):
         """
-        Gathers vassal data for a naval levy call.
-        FIX: Looks for DOCKED fleets and returns consistent home_x/home_y keys.
+        Helper to unify liege/caller identification logic for both land and sea calls.
+        Returns: (House, GamePlayer)
         """
-        # --- 1. DETERMINE LIEGE ---
         liege_house: House | None = None
         liege_player: GamePlayer | None = None
 
         if is_gm_override and acting_house_id is not None:
+            # GM is acting on behalf of a specific house
             liege_house = await self.session.get(House, acting_house_id)
             if not liege_house:
-                return False, [], []
-            # Create dummy player wrapper for GM
+                return None, None
+
+            # Create a mock player object so diplomacy/skill checks don't crash
             liege_player = GamePlayer(
                 game_id=game_id,
                 user_id=0,
@@ -1215,7 +442,9 @@ class DiplomacyService:
                 is_primary=True,
             )
             liege_player.house = liege_house
+
         elif liege_discord_id is not None:
+            # Standard player call
             stmt_p = (
                 select(GamePlayer)
                 .join(User, GamePlayer.user_id == User.user_id)
@@ -1227,108 +456,142 @@ class DiplomacyService:
                 )
             )
             liege_player = (await self.session.execute(stmt_p)).scalars().first()
-            if not liege_player or not liege_player.house:
-                return False, [], []
-            liege_house = liege_player.house
-        else:
-            return False, [], []
+            if liege_player:
+                liege_house = liege_player.house
 
-        # --- 2. CALCULATE STATS ---
-        diplomacy_stat = 10
-        if liege_player.character and liege_player.character.skills:
-            diplomacy_stat = int(liege_player.character.skills.get("diplomacy", 10))
-        elif is_gm_override and not liege_player.character:
-            diplomacy_stat = 10
+        return liege_house, liege_player
 
-        # --- 3. FETCH VASSALS ---
-        stmt_v = select(House).where(
-            House.game_id == game_id,
-            House.liege_id == liege_house.house_id,
-            House.is_ruined == False,
+    async def prepare_sea_levy_call(
+        self, game_id, liege_discord_id=None, acting_house_id=None, is_gm_override=False
+    ):
+        """Phase 1: Gather Sea Vassals and their Locked Channel IDs recursively."""
+        liege_house, liege_player = await self._get_caller_context(
+            game_id, liege_discord_id, acting_house_id, is_gm_override
         )
-        vassals = (await self.session.execute(stmt_v)).scalars().all()
+        if not liege_house:
+            return False, "❌ House not found.", []
 
-        vassal_data = []
-        player_vassals = []
+        # Ownership Check (Must have ships or coastal land)
+        stmt_land = select(Fief.fief_id).where(Fief.owner_id == liege_house.house_id)
+        if (
+            not (await self.session.execute(stmt_land)).scalars().first()
+            and not is_gm_override
+        ):
+            return False, "❌ You have no fleets to call.", []
 
-        for v in vassals:
-            # Check for Player Owner
+        async def process_sea_tree(house_obj):
+            # Check for Player Owner and fetch locked ID
             stmt_owner = (
-                select(User)
-                .join(GamePlayer, User.user_id == GamePlayer.user_id)
+                select(User.discord_id, Character.name, GamePlayer.private_channel_id)
+                .join(GamePlayer)
+                .outerjoin(Character)
                 .where(
                     GamePlayer.game_id == game_id,
-                    GamePlayer.claimed_house_id == v.house_id,
-                    GamePlayer.is_primary == True,
+                    GamePlayer.claimed_house_id == house_obj.house_id,
                 )
             )
-            owner_user = (await self.session.execute(stmt_owner)).scalars().first()
+            owner_res = (await self.session.execute(stmt_owner)).first()
 
-            # Find their main fleet (Must be DOCKED or IDLE)
-            stmt_fleet = (
+            if owner_res:
+                disc_id, char_name, chan_id = owner_res
+                # Filter players with no navy
+                v_ships = (
+                    (
+                        await self.session.execute(
+                            select(Army.army_id).where(
+                                Army.house_id == house_obj.house_id,
+                                Army.army_type == "SEA",
+                            )
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                if not v_ships:
+                    return 0, [], [], None
+
+                return (
+                    0,
+                    [],
+                    [
+                        {
+                            "house_name": house_obj.name,
+                            "character_name": char_name,
+                            "user_id": disc_id,
+                            "private_channel_id": chan_id,  # LOCKED ID
+                        }
+                    ],
+                    None,
+                )
+
+            # NPC Calculation: Find Largest Fleet
+            stmt_f = (
                 select(Army)
                 .where(
-                    Army.house_id == v.house_id,
+                    Army.house_id == house_obj.house_id,
                     Army.army_type == "SEA",
-                    Army.status.in_(
-                        ["DOCKED", "IDLE", "GARRISONED"]
-                    ),  # Correct statuses for fleets
+                    Army.status.in_(["IDLE", "DOCKED", "GARRISONED"]),
                 )
                 .order_by(Army.troop_count.desc())
                 .limit(1)
             )
-            main_fleet = (await self.session.execute(stmt_fleet)).scalars().first()
+            main_fleet = (await self.session.execute(stmt_f)).scalars().first()
 
-            # --- BRANCH A: PLAYER ---
-            if owner_user:
-                player_vassals.append(
-                    {"house_name": v.name, "discord_id": owner_user.discord_id}
-                )
-                continue
+            tree_ships = main_fleet.troop_count if main_fleet else 0
+            tree_breakdown, tree_notifs = [], []
+            fleet_id = main_fleet.army_id if main_fleet else None
 
-            # --- BRANCH B: NPC ---
-            # If NPC has no fleet, they cannot answer. Skip.
-            if not main_fleet or main_fleet.troop_count == 0:
-                continue
-
-            total_ships = main_fleet.troop_count
-
-            # Use home_x/home_y to match the Land logic and Command expectation
-            h_x = main_fleet.location_x
-            h_y = main_fleet.location_y
-
-            # Calculate Loyalty Score
-            score = 30 + (diplomacy_stat * 2)
-            if liege_house.treasury > 5000:
-                score += 10
-
-            # Calculate Percentage
-            percent = 0.0
-            if score >= 80:
-                percent = 0.90
-            elif score >= 60:
-                percent = 0.70
-            elif score >= 40:
-                percent = 0.30
-
-            if total_ships == 0:
-                percent = 0.0
-
-            vassal_data.append(
-                {
-                    "house": v,  # Kept for potential internal usage, but ID/Name preferred
-                    "house_id": v.house_id,
-                    "house_name": v.name,
-                    "ships": total_ships,
-                    "percent": percent,
-                    "score": score,
-                    "home_x": h_x,  # Consistent Key
-                    "home_y": h_y,  # Consistent Key
-                    "source_fleet_id": main_fleet.army_id,
-                }
+            stmt_sub = select(House).where(
+                House.liege_id == house_obj.house_id, House.is_ruined == False
             )
+            for sub in (await self.session.execute(stmt_sub)).scalars().all():
+                s_ships, s_names, s_notifs, _ = await process_sea_tree(sub)
+                tree_ships += s_ships
+                tree_breakdown.extend(s_names if s_ships > 0 else [])
+                tree_notifs.extend(s_notifs)
 
-        return True, vassal_data, player_vassals
+            return tree_ships, tree_breakdown, tree_notifs, fleet_id
+
+        # Execute walk
+        npc_data, player_notifs = [], []
+        dip_stat = (
+            int(liege_player.character.skills.get("diplomacy", 10))
+            if liege_player and liege_player.character
+            else 10
+        )
+
+        stmt_direct = select(House).where(
+            House.liege_id == liege_house.house_id, House.is_ruined == False
+        )
+        for vassal in (await self.session.execute(stmt_direct)).scalars().all():
+            ships, breakdown, notifs, f_id = await process_sea_tree(vassal)
+            player_notifs.extend(notifs)
+            if ships > 0:
+                # Sea rally starts from the fleet's current location
+                stmt_loc = select(Army.location_x, Army.location_y).where(
+                    Army.army_id == f_id
+                )
+                loc = (await self.session.execute(stmt_loc)).first()
+
+                score = 30 + (dip_stat * 2) + (10 if liege_house.treasury > 5000 else 0)
+                npc_data.append(
+                    {
+                        "house_id": vassal.house_id,
+                        "house_name": vassal.name,
+                        "max_amount": ships,
+                        "percent": (
+                            0.9
+                            if score >= 80
+                            else 0.7 if score >= 60 else 0.3 if score >= 40 else 0.0
+                        ),
+                        "home_x": loc[0] if loc else 0,
+                        "home_y": loc[1] if loc else 0,
+                        "source_fleet_id": f_id,
+                        "breakdown": ", ".join(breakdown),
+                    }
+                )
+
+        return True, npc_data, player_notifs
 
     async def check_marriage_authority(
         self, arranger_player: GamePlayer, subject_char: Character

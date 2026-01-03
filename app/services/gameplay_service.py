@@ -259,9 +259,11 @@ class GameplayService:
             game_id=game_id,
             name=char_name,
             dynasty_id=parent_house.house_id,
+            liege_id=parent_house.house_id,
             house_type="faction",
             treasury=0,
             color_hex=parent_house.color_hex,
+            # Courtiers don't pay taxes until they are granted land
             paying_taxes=False,
         )
         self.session.add(faction)

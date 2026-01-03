@@ -1,8 +1,3 @@
-# logic/travel_calculator.py
-
-# --- CONFIGURATION (Loaded from your Config/JSON later) ---
-# How many real seconds equal 1 game day? (55 mins * 60)
-# REAL_SECONDS_PER_GAME_DAY = 3314
 REAL_SECONDS_PER_GAME_DAY = 600
 
 BASE_SPEEDS = {
