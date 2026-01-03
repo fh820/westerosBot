@@ -2,14 +2,14 @@
 
 from app.celery_app import celery_app
 from app.db.sync_db import get_sync_session
-from app.db.models import Army, House, GamePlayer, User, Fief, Game
+from app.db.models import Army, House, GamePlayer, User, Fief, Game, MarchLog
 from app.services.pathfinder_bot_engine import Pathfinder
 from app.services.travel_calculator import calculate_travel_duration, format_duration
 import json
 import redis
 import os
 import datetime
-from app.services.chronicler import generate_battle_narration
+from sqlalchemy.orm.attributes import flag_modified
 
 PF_ENGINE = Pathfinder(
     data_file="master_world_data.json",
@@ -29,7 +29,8 @@ def process_banner_call(
     vassal_instructions: list,
 ):
     """
-    Worker task to process mass troop movements, now resilient to invalid data.
+    Worker task to process mass troop movements.
+    UPDATED: Now generates MarchLogs for interceptions and uses Locked Channel IDs.
     """
     print(f"⚡ Celery: Processing Banner Call for House ID {liege_house_id}...")
     session = get_sync_session()
@@ -50,12 +51,22 @@ def process_banner_call(
         )
 
         if not dest_fief or not liege_house:
-            print(
-                f"❌ Banner Task Error: Could not find destination fief '{rally_point}' or liege house ID {liege_house_id}."
-            )
             return
 
+        # Fetch the Liege's Locked Private Channel for the report
+        liege_player = (
+            session.query(GamePlayer)
+            .filter(
+                GamePlayer.game_id == game_id,
+                GamePlayer.claimed_house_id == liege_house_id,
+                GamePlayer.is_primary == True,
+            )
+            .first()
+        )
+        private_channel_id = liege_player.private_channel_id if liege_player else None
+
         end_c = (dest_fief.location_x, dest_fief.location_y)
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         # 2. Loop through vassal instructions
         for instr in vassal_instructions:
@@ -78,7 +89,6 @@ def process_banner_call(
 
             moved_count = 0
 
-            # Loop through each garrison belonging to the vassal
             for garrison in garrisons:
                 amount = int(garrison.troop_count * percent)
                 if amount < 10:
@@ -86,42 +96,24 @@ def process_banner_call(
 
                 start_c = (garrison.location_x, garrison.location_y)
 
-                # --- FIX START: Add validation before calling the pathfinder ---
-
-                # CHECK 1: Skip garrisons with invalid (0,0) coordinates.
                 if start_c == (0, 0):
-                    print(
-                        f"⚠️ SKIPPING Garrison ID {garrison.army_id} from {house.name}: Invalid coordinates (0,0)."
-                    )
-                    continue  # This is crucial: it skips to the next garrison in the loop.
+                    continue
 
-                # Pathfinding (Sync)
-                path = PF_ENGINE._find_journey_sync(
+                # Pathfinding
+                path_data = PF_ENGINE._find_journey_sync(
                     start_loc=start_c, end_loc=end_c, travel_mode="optimal"
                 )
 
-                # CHECK 2: Skip garrisons where no valid path can be found.
-                if not path:
-                    fief_name = (
-                        garrison.fief.name if garrison.fief else f"coords {start_c}"
-                    )
-                    print(
-                        f"⚠️ SKIPPING Garrison ID {garrison.army_id} from {fief_name}: No path found to {rally_point}."
-                    )
-                    continue  # Also skips to the next garrison.
+                if not path_data:
+                    continue
 
-                # --- FIX END ---
-
-                # This code will now ONLY run if the garrison has valid coords AND a valid path.
-                dur = calculate_travel_duration(path["terrain_breakdown"], amount)
+                dur = calculate_travel_duration(path_data["terrain_breakdown"], amount)
                 if dur > max_duration:
                     max_duration = dur
 
-                arrival = datetime.datetime.now(
-                    datetime.timezone.utc
-                ) + datetime.timedelta(seconds=dur)
+                arrival = now + datetime.timedelta(seconds=dur)
 
-                # Split composition correctly
+                # Split composition
                 ratio = amount / garrison.troop_count
                 levy_comp = {}
                 source_comp = dict(garrison.composition)
@@ -129,13 +121,15 @@ def process_banner_call(
                     moving = int(c * ratio)
                     levy_comp[u] = moving
                     source_comp[u] -= moving
+
                 garrison.composition = source_comp
                 garrison.troop_count -= amount
+                flag_modified(garrison, "composition")
 
                 # Create the new marching army
                 new_levy = Army(
                     game_id=game_id,
-                    house_id=liege_house_id,  # The levy now belongs to the liege
+                    house_id=liege_house_id,
                     commander_name=f"{house.name} Levy",
                     troop_count=amount,
                     composition=levy_comp,
@@ -144,23 +138,31 @@ def process_banner_call(
                     status="MARCHING",
                     destination_x=end_c[0],
                     destination_y=end_c[1],
+                    departure_time=now,
                     arrival_time=arrival,
                 )
                 session.add(new_levy)
+                session.flush()  # Get new_levy.army_id
+
+                # --- CRITICAL FIX: CREATE MARCH LOGS ---
+                # This allows these newly raised levies to be intercepted!
+                path_points = path_data.get("path_points", [])
+                for pt in path_points:
+                    session.add(
+                        MarchLog(
+                            army_id=new_levy.army_id, game_id=game_id, x=pt[0], y=pt[1]
+                        )
+                    )
+
                 moved_count += amount
 
-            # This part of the logic remains the same
             if moved_count > 0:
                 report_lines.append(
                     f"✅ **{house.name}** marches with {moved_count} men."
                 )
                 total_raised += moved_count
             else:
-                # This message will now correctly appear if ALL of a vassal's garrisons
-                # had invalid coords or no path.
-                report_lines.append(
-                    f"⚠️ **{house.name}** could not muster forces (no valid routes or garrisons)."
-                )
+                report_lines.append(f"⚠️ **{house.name}** could not muster forces.")
 
         session.commit()
 
@@ -169,6 +171,7 @@ def process_banner_call(
             "type": "BANNER_REPORT",
             "guild_id": dest_fief.game.guild_id,
             "owner_id": user_discord_id,
+            "private_channel_id": private_channel_id,  # NEW: Locked ID for delivery
             "liege_house_name": liege_house.name,
             "report_lines": report_lines,
             "total_raised": total_raised,
@@ -194,21 +197,14 @@ def generate_path_async(
     army_size,
 ):
     """
-    Celery task to generate a path and publish the result to Redis.
+    Celery task to generate a path.
+    Payload updated to ensure private_channel_id support.
     """
-    print(f"Celery Worker: Generating path from {start_loc} to {end_loc}...")
-    import os  # Add the import here
-
-    print(f"--- ⚔️  WORKER CWD: {os.getcwd()} ⚔️  ---")  # ADD THIS LINE
-    print(f"Celery Worker: Generating path from {start_loc} to {end_loc}...")
-    # This is a blocking call, but it's okay because we are in a separate process.
-    # We use the renamed _find_journey_sync method
     path_data = PF_ENGINE._find_journey_sync(
         start_loc=start_loc, end_loc=end_loc, travel_mode=travel_mode
     )
 
     if not path_data:
-        # Publish a failure event
         payload = {
             "type": "PATH_FAILED",
             "guild_id": guild_id,
@@ -217,13 +213,11 @@ def generate_path_async(
             "reason": "No valid path could be found.",
         }
     else:
-        # Calculate time and prepare success payload
         duration = calculate_travel_duration(path_data["terrain_breakdown"], army_size)
-
         payload = {
             "type": "PATH_READY",
             "guild_id": guild_id,
-            "channel_id": channel_id,
+            "channel_id": channel_id,  # Current channel
             "user_id": user_id,
             "image_path": path_data["image"],
             "time": format_duration(duration),
@@ -233,6 +227,4 @@ def generate_path_async(
             "mode": travel_mode,
         }
 
-    # Publish the result to the 'westeros_bot_events' channel for the bot to pick up
     REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-    print("Celery Worker: Published result to Redis.")

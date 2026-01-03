@@ -79,7 +79,7 @@ class GamePlayer(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     game_id = Column(Integer, ForeignKey("games.game_id"))
     user_id = Column(BigInteger, ForeignKey("users.user_id"))
-
+    private_channel_id = Column(BigInteger, nullable=True)  # <--- ADD THIS
     claimed_house_id = Column(Integer, ForeignKey("houses.house_id"), nullable=True)
 
     character_id = Column(Integer, ForeignKey("characters.char_id"), nullable=True)

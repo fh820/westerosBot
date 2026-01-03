@@ -727,7 +727,7 @@ class BattleService:
             "is_retreat": not is_destroyed,
         }
 
-        return final_report, guild_id
+        return final_report, guild_id, notif_data
 
     # ======================================================================
     # ===== AUTO-BATTLE METHODS (Explicit Implementation for Celery) =======

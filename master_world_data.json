@@ -556,10 +556,10 @@
         "base_income": 5500,
         "ancestral_weapon": null,
         "army_stats": {
-            "Infantry": 2100.0,
-            "Cavalry": 1260.0,
-            "Archers": 1260.0,
-            "Ships": 20.0
+            "Infantry": 2100,
+            "Cavalry": 1260,
+            "Archers": 1260,
+            "Ships": 20
         },
         "choke_point": null
     },

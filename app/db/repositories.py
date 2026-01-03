@@ -490,28 +490,39 @@ class ArmyRepo:
         fleet: Army,
         dest_x: int,
         dest_y: int,
-        departure_time: datetime,
     ) -> Army:
-        """Creates a new land army from a fleet's cargo, ready for marching."""
+        """
+        Creates a new land army from a fleet's cargo.
+        Called when a fleet arrives at a landing zone.
+        """
         cargo = fleet.cargo
+        if not cargo:
+            return None
+
         new_army = Army(
             game_id=fleet.game_id,
             house_id=fleet.house_id,
             army_type="LAND",
-            commander_name=cargo.get("commander", "Disembarked Host"),
+            commander_name=cargo.get("commander", f"Host of {fleet.commander_name}"),
             troop_count=cargo.get("troop_count", 0),
             composition=cargo.get("composition", {}),
-            location_x=fleet.destination_x,  # Starts where the fleet ends
-            location_y=fleet.destination_y,
+            treasury=cargo.get("gold", 0),
+            location_x=fleet.location_x,  # Current location (the coast)
+            location_y=fleet.location_y,
             destination_x=dest_x,
             destination_y=dest_y,
-            status="MARCHING",  # It will start marching immediately upon creation
-            departure_time=departure_time,
+            status="MARCHING",
+            departure_time=datetime.datetime.now(datetime.timezone.utc),
         )
-        session.add(new_army)
 
-        # Clear the fleet's cargo as it's now a separate entity
+        session.add(new_army)
+        await session.flush()  # CRITICAL: Generates land_army.army_id
+
+        # Clear cargo from ship
         fleet.cargo = None
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(fleet, "cargo")
 
         return new_army
 

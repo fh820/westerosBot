@@ -1,5 +1,3 @@
-# app/tasks/light_tasks.py
-
 from app.celery_app import celery_app
 from app.db.sync_db import get_sync_session
 from app.db.models import (
@@ -143,660 +141,16 @@ def process_game_upkeep(game_id: int):
         print(f"Finished upkeep processing for game_id: {game_id}.")
 
 
-# @celery_app.task
-# def resolve_army_arrival(army_id: int):
-#     """
-#     Executes when an army or fleet arrives.
-#     - Handles Hybrid Journeys (Sail -> March) by syncing the Ghost Army.
-#     - Handles Pure Sea Journeys by unpacking cargo into a new Army.
-#     """
-#     print(f"--- RESOLVING ARRIVAL FOR ARMY ID: {army_id} ---")
-#     session = get_sync_session()
-
-#     try:
-#         army = session.query(Army).filter(Army.army_id == army_id).first()
-
-#         if not army or army.status not in ["MARCHING", "SAILING"]:
-#             print(f"DEBUG: Army {army_id} invalid state or not found.")
-#             return
-
-#         # 1. Update Coordinates & Clear Movement Data
-#         army.location_x = army.destination_x
-#         army.location_y = army.destination_y
-#         army.destination_x = None
-#         army.destination_y = None
-#         army.arrival_time = None
-#         army.departure_time = None
-#         army.task_id = None
-
-#         new_status = ""
-#         now = datetime.datetime.now(datetime.timezone.utc)
-
-#         # --- LOGIC BRANCH A: LAND ARMY ---
-#         if army.army_type == "LAND":
-#             fief = (
-#                 session.query(Fief)
-#                 .filter(
-#                     Fief.location_x == army.location_x,
-#                     Fief.location_y == army.location_y,
-#                 )
-#                 .first()
-#             )
-#             new_status = "GARRISONED" if fief else "IDLE"
-
-#         # --- LOGIC BRANCH B: FLEET ARRIVAL ---
-#         elif army.army_type == "SEA":
-#             print("DEBUG: Fleet arrival detected. Checking for cargo operations...")
-#             new_status = "DOCKED"  # Or "IDLE" depending on your preference
-
-#             # --- CASE 1: PURE SEA JOURNEY (Unpack Cargo) ---
-#             # If the fleet has cargo data, it means no Ghost Army was created.
-#             # We must create the land army NOW.
-#             if army.cargo and army.cargo.get("troop_count", 0) > 0:
-#                 print(f"DEBUG: Unpacking Cargo from Fleet {army_id}...")
-
-#                 cargo = army.cargo
-
-#                 # Check for fief at arrival point
-#                 fief = (
-#                     session.query(Fief)
-#                     .filter(
-#                         Fief.location_x == army.location_x,
-#                         Fief.location_y == army.location_y,
-#                     )
-#                     .first()
-#                 )
-#                 land_status = "GARRISONED" if fief else "IDLE"
-
-#                 # Create the new army
-#                 new_land_army = Army(
-#                     game_id=army.game_id,
-#                     house_id=army.house_id,
-#                     army_type="LAND",
-#                     commander_name=cargo.get("commander", "Disembarked Force"),
-#                     troop_count=cargo.get("troop_count", 0),
-#                     composition=cargo.get("composition", {}),
-#                     location_x=army.location_x,
-#                     location_y=army.location_y,
-#                     status=land_status,
-#                     treasury=0,
-#                 )
-#                 session.add(new_land_army)
-
-#                 # Clear the fleet's cargo so troops aren't duplicated
-#                 army.cargo = None
-#                 print("DEBUG: Cargo unpacked into new Army.")
-
-#             # --- CASE 2: HYBRID JOURNEY (Sync Ghost Army) ---
-#             # If cargo is empty, it means a Ghost Army was already created
-#             # and is waiting in the database with status='MARCHING'.
-#             else:
-#                 # Find the Land Army belonging to this house, at this location,
-#                 # that is currently set to 'MARCHING'.
-#                 ghost_army = (
-#                     session.query(Army)
-#                     .filter(
-#                         Army.house_id == army.house_id,
-#                         Army.army_type == "LAND",
-#                         Army.status
-#                         == "MARCHING",  # Crucial: Service sets this to MARCHING
-#                         Army.location_x == army.location_x,
-#                         Army.location_y == army.location_y,
-#                     )
-#                     .first()
-#                 )
-
-#                 if ghost_army:
-#                     print(
-#                         f"DEBUG: Found Hybrid Ghost Army (ID: {ghost_army.army_id}). Syncing times."
-#                     )
-
-#                     # The Ghost Army has a departure_time set to the *estimated* arrival.
-#                     # We accept the drift and update its times to start NOW.
-
-#                     # Calculate how long the march was supposed to be
-#                     if ghost_army.arrival_time and ghost_army.departure_time:
-#                         march_duration = (
-#                             ghost_army.arrival_time - ghost_army.departure_time
-#                         )
-#                     else:
-#                         march_duration = datetime.timedelta(hours=1)  # Fallback
-
-#                     # Reset start time to NOW to fix any lag drift
-#                     ghost_army.departure_time = now
-#                     ghost_army.arrival_time = now + march_duration
-
-#                     # We must Reschedule the Celery Task because the original task
-#                     # might have fired too early or late due to drift.
-#                     if ghost_army.task_id:
-#                         celery_app.control.revoke(ghost_army.task_id)
-
-#                     new_task = resolve_army_arrival.apply_async(
-#                         args=[ghost_army.army_id], eta=ghost_army.arrival_time
-#                     )
-#                     ghost_army.task_id = new_task.id
-
-#                     print(
-#                         f"DEBUG: Ghost Army {ghost_army.army_id} resynced and marching."
-#                     )
-#                 else:
-#                     print(
-#                         "DEBUG: No cargo and no ghost army found. Fleet is just moving empty."
-#                     )
-
-#         # 4. Finalize & Commit
-#         army.status = new_status
-#         # Clear logs
-#         session.query(MarchLog).filter(MarchLog.army_id == army_id).delete()
-
-#         # 5. Commit Changes
-#         session.commit()
-#         print(f"DEBUG: Success. Army {army_id} is now {new_status}.")
-
-#         # 6. Notifications (Redis) logic...
-#         # (Keep your existing notification code here)
-#         house = session.query(House).filter(House.house_id == army.house_id).first()
-#         if house:
-#             owner_query = (
-#                 session.query(User)
-#                 .join(GamePlayer)
-#                 .filter(
-#                     GamePlayer.claimed_house_id == army.house_id,
-#                     GamePlayer.is_primary == True,
-#                 )
-#                 .first()
-#             )
-#             owner_discord_id = owner_query.discord_id if owner_query else None
-
-#             # Get location name
-#             loc = (
-#                 session.query(Fief)
-#                 .filter(
-#                     Fief.location_x == army.location_x,
-#                     Fief.location_y == army.location_y,
-#                 )
-#                 .first()
-#             )
-#             location_name = (
-#                 loc.name
-#                 if loc
-#                 else f"Coord ({int(army.location_x)}, {int(army.location_y)})"
-#             )
-
-#             payload = {
-#                 "type": "ARRIVAL",
-#                 "guild_id": house.game.guild_id,
-#                 "house_name": house.name,
-#                 "owner_id": owner_discord_id,
-#                 "commander": army.commander_name,
-#                 "troops": army.troop_count,
-#                 "unit_type": army.army_type,
-#                 "location": location_name,
-#             }
-#             # Publish
-#             if REDIS_CLIENT:
-#                 REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-
-#     except Exception as e:
-#         print(f"FATAL ERROR in resolve_army_arrival (ID: {army_id})")
-#         import traceback
-
-#         traceback.print_exc()
-#         session.rollback()
-#     finally:
-#         session.close()
-
-
-# @celery_app.task
-# def resolve_army_arrival(army_id: int):
-#     """
-#     Executes when an army or fleet arrives.
-#     - Handles Hybrid Journeys (Sail -> March) by syncing the Ghost Army.
-#     - Handles Pure Sea Journeys by unpacking cargo into a new Army.
-#     """
-#     print(f"--- RESOLVING ARRIVAL FOR ARMY ID: {army_id} ---")
-#     session = get_sync_session()
-
-#     try:
-#         army = session.query(Army).filter(Army.army_id == army_id).first()
-
-#         if not army or army.status not in ["MARCHING", "SAILING"]:
-#             print(f"DEBUG: Army {army_id} invalid state or not found.")
-#             return
-
-#         # 1. Update Coordinates & Clear Movement Data
-#         army.location_x = army.destination_x
-#         army.location_y = army.destination_y
-#         army.destination_x = None
-#         army.destination_y = None
-#         army.arrival_time = None
-#         army.departure_time = None
-#         army.task_id = None
-
-#         new_status = ""
-#         now = datetime.datetime.now(datetime.timezone.utc)
-
-#         # --- LOGIC BRANCH A: LAND ARMY ---
-#         if army.army_type == "LAND":
-#             fief = (
-#                 session.query(Fief)
-#                 .filter(
-#                     Fief.location_x == army.location_x,
-#                     Fief.location_y == army.location_y,
-#                 )
-#                 .first()
-#             )
-#             # --- FIX 1: Check for Fief Ownership ---
-#             # An army can only be garrisoned if it's on its own territory.
-#             new_status = (
-#                 "GARRISONED" if fief and fief.owner_id == army.house_id else "IDLE"
-#             )
-
-#         # --- LOGIC BRANCH B: FLEET ARRIVAL ---
-#         elif army.army_type == "SEA":
-#             print("DEBUG: Fleet arrival detected. Checking for cargo operations...")
-#             new_status = "DOCKED"
-
-#             # --- CASE 1: PURE SEA JOURNEY (Unpack Cargo) ---
-#             if army.cargo and army.cargo.get("troop_count", 0) > 0:
-#                 print(f"DEBUG: Unpacking Cargo from Fleet {army_id}...")
-#                 cargo = army.cargo
-
-#                 fief = (
-#                     session.query(Fief)
-#                     .filter(
-#                         Fief.location_x == army.location_x,
-#                         Fief.location_y == army.location_y,
-#                     )
-#                     .first()
-#                 )
-#                 # --- FIX 2: Check Ownership for Disembarked Troops ---
-#                 # The newly created land army should also obey the same garrisoning rule.
-#                 land_status = (
-#                     "GARRISONED" if fief and fief.owner_id == army.house_id else "IDLE"
-#                 )
-
-#                 new_land_army = Army(
-#                     game_id=army.game_id,
-#                     house_id=army.house_id,
-#                     army_type="LAND",
-#                     commander_name=cargo.get("commander", "Disembarked Force"),
-#                     troop_count=cargo.get("troop_count", 0),
-#                     composition=cargo.get("composition", {}),
-#                     location_x=army.location_x,
-#                     location_y=army.location_y,
-#                     status=land_status,  # Use the correctly determined status
-#                     treasury=0,
-#                 )
-#                 session.add(new_land_army)
-#                 army.cargo = None
-#                 print(
-#                     f"DEBUG: Cargo unpacked into new Army with status '{land_status}'."
-#                 )
-
-#             # --- CASE 2: HYBRID JOURNEY (Sync Ghost Army) ---
-#             else:
-#                 ghost_army = (
-#                     session.query(Army)
-#                     .filter(
-#                         Army.house_id == army.house_id,
-#                         Army.army_type == "LAND",
-#                         Army.status == "MARCHING",
-#                         Army.location_x == army.location_x,
-#                         Army.location_y == army.location_y,
-#                     )
-#                     .first()
-#                 )
-#                 if ghost_army:
-#                     print(
-#                         f"DEBUG: Found Hybrid Ghost Army (ID: {ghost_army.army_id}). Syncing times."
-#                     )
-#                     if ghost_army.arrival_time and ghost_army.departure_time:
-#                         march_duration = (
-#                             ghost_army.arrival_time - ghost_army.departure_time
-#                         )
-#                     else:
-#                         march_duration = datetime.timedelta(hours=1)
-#                     ghost_army.departure_time = now
-#                     ghost_army.arrival_time = now + march_duration
-#                     if ghost_army.task_id:
-#                         celery_app.control.revoke(ghost_army.task_id)
-#                     new_task = resolve_army_arrival.apply_async(
-#                         args=[ghost_army.army_id], eta=ghost_army.arrival_time
-#                     )
-#                     ghost_army.task_id = new_task.id
-#                     print(
-#                         f"DEBUG: Ghost Army {ghost_army.army_id} resynced and marching."
-#                     )
-#                 else:
-#                     print(
-#                         "DEBUG: No cargo and no ghost army found. Fleet is just moving empty."
-#                     )
-
-#         # 4. Finalize & Commit
-#         army.status = new_status
-#         session.query(MarchLog).filter(MarchLog.army_id == army_id).delete()
-#         session.commit()
-#         print(f"DEBUG: Success. Army {army_id} is now {new_status}.")
-
-#         # 6. Notifications (Redis) logic...
-#         house = session.query(House).filter(House.house_id == army.house_id).first()
-#         if house:
-#             owner_query = (
-#                 session.query(User)
-#                 .join(GamePlayer)
-#                 .filter(
-#                     GamePlayer.claimed_house_id == army.house_id,
-#                     GamePlayer.is_primary == True,
-#                 )
-#                 .first()
-#             )
-#             owner_discord_id = owner_query.discord_id if owner_query else None
-#             loc = (
-#                 session.query(Fief)
-#                 .filter(
-#                     Fief.location_x == army.location_x,
-#                     Fief.location_y == army.location_y,
-#                 )
-#                 .first()
-#             )
-#             location_name = (
-#                 loc.name
-#                 if loc
-#                 else f"Coord ({int(army.location_x)}, {int(army.location_y)})"
-#             )
-#             payload = {
-#                 "type": "ARRIVAL",
-#                 "guild_id": house.game.guild_id,
-#                 "house_name": house.name,
-#                 "owner_id": owner_discord_id,
-#                 "commander": army.commander_name,
-#                 "troops": army.troop_count,
-#                 "unit_type": army.army_type,
-#                 "location": location_name,
-#             }
-#             if REDIS_CLIENT:
-#                 REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-
-#     except Exception as e:
-#         print(f"FATAL ERROR in resolve_army_arrival (ID: {army_id})")
-#         import traceback
-
-#         traceback.print_exc()
-#         session.rollback()
-#     finally:
-#         session.close()
-
-
-# @celery_app.task(bind=True)
-# def resolve_army_arrival(self, army_id: int):
-#     """
-#     Finalizes army movement.
-#     Includes "Smart Snap" logic to ensure Fleets connect with their Hybrid Armies.
-#     """
-#     print(f"--- RESOLVING ARRIVAL FOR ARMY ID: {army_id} ---")
-#     session = get_sync_session()
-#     try:
-#         army = (
-#             session.query(Army)
-#             .options(selectinload(Army.house).selectinload(House.game))
-#             .get(army_id)
-#         )
-
-#         if not army or army.status not in ["MARCHING", "SAILING"]:
-#             print(f"DEBUG: Army {army_id} invalid state or not found. Task ending.")
-#             session.close()
-#             return
-
-#         # 1. Update Coordinates from Destination
-#         army.location_x = army.destination_x
-#         army.location_y = army.destination_y
-
-#         # 2. "SMART SNAP" LOGIC FOR FLEETS
-#         # We must prioritize snapping to the tile where a Ghost Army is waiting.
-#         if army.army_type == "SEA":
-#             print(
-#                 f"[DEBUG ARRIVAL] Fleet {army.army_id} arrived at {army.location_x},{army.location_y}."
-#             )
-
-#             original_x, original_y = int(army.location_x), int(army.location_y)
-#             target_snap_x, target_snap_y = None, None
-
-#             # --- PASS 1: SEARCH FOR WAITING GHOST ARMY (Priority) ---
-#             # Search 3x3 grid for a friendly Land Army that is MARCHING
-#             ghost_found = False
-#             for dx in range(-1, 2):
-#                 for dy in range(-1, 2):
-#                     check_x, check_y = original_x + dx, original_y + dy
-
-#                     # Look for the specific conditions of a hybrid journey ghost army
-#                     candidate = (
-#                         session.query(Army)
-#                         .filter(
-#                             Army.game_id == army.game_id,
-#                             Army.house_id == army.house_id,
-#                             Army.location_x == check_x,
-#                             Army.location_y == check_y,
-#                             Army.army_type == "LAND",
-#                             Army.status == "MARCHING",
-#                         )
-#                         .first()
-#                     )
-
-#                     if candidate:
-#                         print(
-#                             f"[DEBUG ARRIVAL] Found waiting Ghost Army at {check_x},{check_y}. Snapping there."
-#                         )
-#                         target_snap_x, target_snap_y = check_x, check_y
-#                         ghost_found = True
-#                         break
-#                 if ghost_found:
-#                     break
-
-#             # --- PASS 2: GENERIC LAND FINDER (Fallback for Cargo Unloading) ---
-#             if not target_snap_x:
-#                 min_dist_sq = float("inf")
-#                 for dx in range(-1, 2):
-#                     for dy in range(-1, 2):
-#                         check_x, check_y = original_x + dx, original_y + dy
-
-#                         if (
-#                             0 <= check_y < PF_ENGINE.cost_map.shape[0]
-#                             and 0 <= check_x < PF_ENGINE.cost_map.shape[1]
-#                         ):
-
-#                             terrain_cost = PF_ENGINE.cost_map[check_y, check_x]
-#                             # Check for Land or Road
-#                             if terrain_cost in [COSTS["land"], COSTS["road"]]:
-#                                 dist_sq = dx * dx + dy * dy
-#                                 if dist_sq < min_dist_sq:
-#                                     min_dist_sq = dist_sq
-#                                     target_snap_x, target_snap_y = check_x, check_y
-
-#             # Apply the Snap
-#             if target_snap_x is not None:
-#                 army.location_x = target_snap_x
-#                 army.location_y = target_snap_y
-#             else:
-#                 print(
-#                     f"[DEBUG ARRIVAL] WARNING: Fleet remained at sea/water coords {original_x},{original_y}. No land found."
-#                 )
-
-#         # 3. Clear Movement Data
-#         army.destination_x, army.destination_y = None, None
-#         army.arrival_time, army.departure_time = None, None
-#         army.task_id = None
-
-#         new_status = ""
-#         now = datetime.datetime.now(datetime.timezone.utc)
-
-#         # 4. DETERMINE FINAL STATUS AND HANDLE CARGO/HYBRID
-#         if army.army_type == "LAND":
-#             fief = (
-#                 session.query(Fief)
-#                 .filter(
-#                     Fief.location_x == army.location_x,
-#                     Fief.location_y == army.location_y,
-#                 )
-#                 .first()
-#             )
-#             new_status = (
-#                 "GARRISONED" if fief and fief.owner_id == army.house_id else "IDLE"
-#             )
-
-#         elif army.army_type == "SEA":
-#             new_status = "DOCKED"
-
-#             # --- CASE 1: CARGO UNPACKING (Pure Sea Journey) ---
-#             if army.cargo and army.cargo.get("troop_count", 0) > 0:
-#                 print(f"DEBUG: Unpacking Cargo from Fleet {army_id}...")
-#                 cargo = army.cargo
-#                 fief = (
-#                     session.query(Fief)
-#                     .filter(
-#                         Fief.location_x == army.location_x,
-#                         Fief.location_y == army.location_y,
-#                     )
-#                     .first()
-#                 )
-#                 land_status = (
-#                     "GARRISONED" if fief and fief.owner_id == army.house_id else "IDLE"
-#                 )
-
-#                 new_land_army = Army(
-#                     game_id=army.game_id,
-#                     house_id=army.house_id,
-#                     army_type="LAND",
-#                     commander_name=cargo.get("commander", "Disembarked Force"),
-#                     troop_count=cargo.get("troop_count", 0),
-#                     composition=cargo.get("composition", {}),
-#                     location_x=army.location_x,
-#                     location_y=army.location_y,
-#                     status=land_status,
-#                     treasury=0,
-#                 )
-#                 session.add(new_land_army)
-#                 army.cargo = None
-#                 print(
-#                     f"DEBUG: Cargo unpacked into new Army with status '{land_status}'."
-#                 )
-
-#             # --- CASE 2: HYBRID JOURNEY (Sync Ghost Army) ---
-#             else:
-#                 # We search for the Ghost Army at the fleet's CURRENT (Snapped) location
-#                 ghost_army = (
-#                     session.query(Army)
-#                     .filter(
-#                         Army.house_id == army.house_id,
-#                         Army.army_type == "LAND",
-#                         Army.status == "MARCHING",
-#                         Army.location_x == army.location_x,
-#                         Army.location_y == army.location_y,
-#                     )
-#                     .first()
-#                 )
-
-#                 if ghost_army:
-#                     print(
-#                         f"DEBUG: Found Hybrid Ghost Army (ID: {ghost_army.army_id}). Syncing times."
-#                     )
-
-#                     # Calculate remaining duration or default
-#                     if ghost_army.arrival_time and ghost_army.departure_time:
-#                         march_duration = (
-#                             ghost_army.arrival_time - ghost_army.departure_time
-#                         )
-#                     else:
-#                         march_duration = datetime.timedelta(hours=1)
-
-#                     # Reset times to NOW
-#                     ghost_army.departure_time = now
-#                     ghost_army.arrival_time = now + march_duration
-
-#                     # Reschedule Task
-#                     if ghost_army.task_id:
-#                         celery_app.control.revoke(ghost_army.task_id)
-
-#                     new_task = resolve_army_arrival.apply_async(
-#                         args=[ghost_army.army_id], eta=ghost_army.arrival_time
-#                     )
-#                     ghost_army.task_id = new_task.id
-#                     print(
-#                         f"DEBUG: Ghost Army {ghost_army.army_id} resynced and marching."
-#                     )
-#                 else:
-#                     print(
-#                         "DEBUG: No cargo and no ghost army found. Fleet arrived empty."
-#                     )
-
-#         # 5. Finalize State
-#         army.status = new_status
-#         session.query(MarchLog).filter(MarchLog.army_id == army_id).delete()
-#         session.commit()
-#         print(f"DEBUG: Success. Army {army_id} is now {new_status}.")
-
-#         # 7. Notifications (Redis)
-#         house = army.house
-#         if house and house.game:
-#             owner_query = (
-#                 session.query(User)
-#                 .join(GamePlayer)
-#                 .filter(
-#                     GamePlayer.claimed_house_id == army.house_id,
-#                     GamePlayer.is_primary == True,
-#                 )
-#                 .first()
-#             )
-#             owner_discord_id = owner_query.discord_id if owner_query else None
-
-#             loc_fief = (
-#                 session.query(Fief)
-#                 .filter(
-#                     Fief.location_x == army.location_x,
-#                     Fief.location_y == army.location_y,
-#                 )
-#                 .first()
-#             )
-#             location_name = (
-#                 loc_fief.name
-#                 if loc_fief
-#                 else f"Coord ({int(army.location_x)}, {int(army.location_y)})"
-#             )
-
-#             payload = {
-#                 "type": "ARRIVAL",
-#                 "guild_id": house.game.guild_id,
-#                 "house_name": house.name,
-#                 "owner_id": owner_discord_id,
-#                 "house_id": army.house_id,
-#                 "commander": army.commander_name,
-#                 "troops": army.troop_count,
-#                 "unit_type": army.army_type,
-#                 "location": location_name,
-#             }
-#             if REDIS_CLIENT:
-#                 REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-#             print(f"DEBUG: Published arrival event: {payload}")
-
-#     except Exception as e:
-#         session.rollback()
-#         print(f"FATAL ERROR in resolve_army_arrival for Army ID {army_id}: {e}")
-#         import traceback
-
-#         traceback.print_exc()
-#         raise self.retry(exc=e, countdown=60)
-#     finally:
-#         session.close()
-
-
 @celery_app.task(bind=True)
 def resolve_army_arrival(self, army_id: int):
     """
     Finalizes army movement.
-    Includes "Smart Snap" logic and prevents cargo from disembarking in the ocean.
+    Spawns land armies for hybrid journeys (Sail -> March).
     """
-    print(f"--- RESOLVING ARRIVAL FOR ARMY ID: {army_id} ---")
+    from sqlalchemy.orm.attributes import flag_modified
+
     session = get_sync_session()
+
     try:
         army = (
             session.query(Army)
@@ -805,206 +159,125 @@ def resolve_army_arrival(self, army_id: int):
         )
 
         if not army or army.status not in ["MARCHING", "SAILING"]:
-            print(f"DEBUG: Army {army_id} invalid state or not found. Task ending.")
             session.close()
             return
 
-        # 1. Update Coordinates from Destination
+        # 1. Update Coordinates
         army.location_x = army.destination_x
         army.location_y = army.destination_y
 
-        # 2. "SMART SNAP" LOGIC (No changes needed here, this logic is fine)
-        if army.army_type == "SEA":
-            # ... (the existing smart snap logic remains the same) ...
-            pass
-
-        # 3. Clear Movement Data
+        # 2. Clear Movement Data
         army.destination_x, army.destination_y = None, None
-        army.arrival_time, army.departure_time = None, None
-        army.task_id = None
+        army.arrival_time, army.departure_time, army.task_id = None, None, None
 
         new_status = ""
         now = datetime.datetime.now(datetime.timezone.utc)
 
-        # 4. DETERMINE FINAL STATUS AND HANDLE CARGO/HYBRID
-        if army.army_type == "LAND":
+        # 3. HANDLE DISEMBARKATION (Hybrid Journey)
+        if army.army_type == "SEA" and army.cargo and "pending_march" in army.cargo:
+            p = army.cargo["pending_march"]
+
+            # Create the Land Army at the landing zone
+            land_army = Army(
+                game_id=army.game_id,
+                house_id=army.house_id,
+                army_type="LAND",
+                commander_name=army.cargo.get(
+                    "commander", f"Host of {army.commander_name}"
+                ),
+                troop_count=army.cargo.get("troop_count", 0),
+                composition=army.cargo.get("composition", {}),
+                location_x=army.location_x,
+                location_y=army.location_y,
+                destination_x=p["dest_x"],
+                destination_y=p["dest_y"],
+                status="MARCHING",
+                departure_time=now,
+                arrival_time=now + datetime.timedelta(seconds=p["duration"]),
+            )
+            session.add(land_army)
+            session.flush()  # Get land_army.army_id
+
+            # Log the trajectory for the land leg (Required for interceptions)
+            path_points = p.get("path", [])
+            for i, pt in enumerate(path_points):
+                session.add(
+                    MarchLog(
+                        army_id=land_army.army_id,
+                        game_id=army.game_id,
+                        x=pt[0],
+                        y=pt[1],
+                    )
+                )
+
+            # Schedule final destination arrival
+            new_task = resolve_army_arrival.apply_async(
+                args=[land_army.army_id], eta=land_army.arrival_time
+            )
+            land_army.task_id = new_task.id
+
+            # Clear Fleet Cargo
+            army.cargo = None
+            flag_modified(army, "cargo")
+            new_status = "DOCKED"
+
+        elif army.army_type == "LAND":
             fief = (
                 session.query(Fief)
-                .filter(
-                    Fief.location_x == army.location_x,
-                    Fief.location_y == army.location_y,
-                )
+                .filter_by(location_x=army.location_x, location_y=army.location_y)
                 .first()
             )
             new_status = (
                 "GARRISONED" if fief and fief.owner_id == army.house_id else "IDLE"
             )
+        else:
+            new_status = "DOCKED"
 
-        elif army.army_type == "SEA":
-            # --- CORRECTED LOGIC [START] ---
-            # Priority 1: Handle Hybrid Journey (fleet has no cargo, but a ghost army is waiting)
-            ghost_army = (
-                session.query(Army)
-                .filter(
-                    Army.house_id == army.house_id,
-                    Army.army_type == "LAND",
-                    Army.status == "MARCHING",
-                    Army.location_x == army.location_x,
-                    Army.location_y == army.location_y,
-                )
-                .first()
-            )
-
-            if ghost_army:
-                print(
-                    f"DEBUG: Found Hybrid Ghost Army (ID: {ghost_army.army_id}). Syncing."
-                )
-                new_status = "DOCKED"
-                # ... (rest of ghost army sync logic is correct and remains the same) ...
-                if ghost_army.arrival_time and ghost_army.departure_time:
-                    march_duration = ghost_army.arrival_time - ghost_army.departure_time
-                else:
-                    march_duration = datetime.timedelta(hours=1)
-                ghost_army.departure_time = now
-                ghost_army.arrival_time = now + march_duration
-                if ghost_army.task_id:
-                    celery_app.control.revoke(ghost_army.task_id)
-                new_task = resolve_army_arrival.apply_async(
-                    args=[ghost_army.army_id], eta=ghost_army.arrival_time
-                )
-                ghost_army.task_id = new_task.id
-                print(f"DEBUG: Ghost Army {ghost_army.army_id} resynced.")
-
-            # Priority 2: Handle Pure Cargo Journey (fleet has cargo)
-            elif army.cargo and army.cargo.get("troop_count", 0) > 0:
-                print(
-                    f"DEBUG: Fleet {army_id} arrived with cargo. Checking for valid landing zone."
-                )
-
-                # Scan for a valid spot to disembark
-                best_land_spot = None
-                min_dist_sq = float("inf")
-                original_x, original_y = int(army.location_x), int(army.location_y)
-                cost_map = PF_ENGINE.cost_map
-                rows, cols = cost_map.shape
-
-                for dx in range(-1, 2):
-                    for dy in range(-1, 2):
-                        check_x, check_y = original_x + dx, original_y + dy
-                        if 0 <= check_y < rows and 0 <= check_x < cols:
-                            terrain_cost = cost_map[check_y, check_x]
-                            if terrain_cost not in [
-                                COSTS["ocean"],
-                                COSTS["coastal_water"],
-                            ]:
-                                dist_sq = dx * dx + dy * dy
-                                if dist_sq < min_dist_sq:
-                                    min_dist_sq = dist_sq
-                                    best_land_spot = (check_x, check_y)
-
-                # CASE A: Valid landing spot found -> Unpack the cargo
-                if best_land_spot:
-                    print(
-                        f"DEBUG: Landing zone found at {best_land_spot}. Disembarking cargo."
-                    )
-                    new_status = "DOCKED"
-                    cargo = army.cargo
-                    fief = (
-                        session.query(Fief)
-                        .filter(
-                            Fief.location_x == best_land_spot[0],
-                            Fief.location_y == best_land_spot[1],
-                        )
-                        .first()
-                    )
-                    land_status = (
-                        "GARRISONED"
-                        if fief and fief.owner_id == army.house_id
-                        else "IDLE"
-                    )
-
-                    new_land_army = Army(
-                        game_id=army.game_id,
-                        house_id=army.house_id,
-                        army_type="LAND",
-                        commander_name=cargo.get("commander", "Disembarked Force"),
-                        troop_count=cargo.get("troop_count", 0),
-                        composition=cargo.get("composition", {}),
-                        location_x=best_land_spot[0],
-                        location_y=best_land_spot[1],
-                        status=land_status,
-                        treasury=0,
-                    )
-                    session.add(new_land_army)
-                    army.cargo = None
-
-                # CASE B: No valid landing spot -> Keep cargo onboard
-                else:
-                    print(
-                        "DEBUG: No valid landing zone. Cargo remains onboard. Fleet is now idle at sea."
-                    )
-                    new_status = "IDLE"
-
-            # Priority 3: Fleet arrived empty and is not part of a hybrid journey
-            else:
-                print("DEBUG: No cargo and no ghost army found. Fleet arrived empty.")
-                new_status = "DOCKED"
-            # --- CORRECTED LOGIC [END] ---
-
-        # 5. Finalize State
         army.status = new_status
-        session.query(MarchLog).filter(MarchLog.army_id == army_id).delete()
+        session.query(MarchLog).filter_by(army_id=army_id).delete()
+
+        # 4. NOTIFICATION DATA (Fetch Locked Quarters ID)
+        owner_data = (
+            session.query(User.discord_id, GamePlayer.private_channel_id)
+            .join(GamePlayer)
+            .where(
+                GamePlayer.claimed_house_id == army.house_id,
+                GamePlayer.game_id == army.game_id,
+                GamePlayer.is_primary == True,
+            )
+            .first()
+        )
+
+        fief_at_loc = (
+            session.query(Fief)
+            .filter_by(location_x=army.location_x, location_y=army.location_y)
+            .first()
+        )
+        loc_name = (
+            fief_at_loc.name
+            if fief_at_loc
+            else f"Coord ({int(army.location_x)}, {int(army.location_y)})"
+        )
+
+        payload = {
+            "type": "ARRIVAL",
+            "guild_id": army.house.game.guild_id,
+            "house_name": army.house.name,
+            "house_id": army.house_id,
+            "owner_id": owner_data.discord_id if owner_data else None,
+            "private_channel_id": (
+                owner_data.private_channel_id if owner_data else None
+            ),  # FOR COG DELIVERY
+            "commander": army.commander_name,
+            "troops": army.troop_count,
+            "unit_type": army.army_type,
+            "location": loc_name,
+        }
+        REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
         session.commit()
-        print(f"DEBUG: Success. Army {army_id} is now {new_status}.")
-
-        # ... (Notification logic remains the same) ...
-        house = army.house
-        if house and house.game:
-            owner_query = (
-                session.query(User)
-                .join(GamePlayer)
-                .filter(
-                    GamePlayer.claimed_house_id == army.house_id,
-                    GamePlayer.is_primary == True,
-                )
-                .first()
-            )
-            owner_discord_id = owner_query.discord_id if owner_query else None
-
-            loc_fief = (
-                session.query(Fief)
-                .filter(
-                    Fief.location_x == army.location_x,
-                    Fief.location_y == army.location_y,
-                )
-                .first()
-            )
-            location_name = (
-                loc_fief.name
-                if loc_fief
-                else f"Coord ({int(army.location_x)}, {int(army.location_y)})"
-            )
-            payload = {
-                "type": "ARRIVAL",
-                "guild_id": house.game.guild_id,
-                "house_name": house.name,
-                "owner_id": owner_discord_id,
-                "house_id": army.house_id,  # Ensure house_id is included
-                "commander": army.commander_name,
-                "troops": army.troop_count,
-                "unit_type": army.army_type,
-                "location": location_name,
-            }
-            if REDIS_CLIENT:
-                REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-            print(f"DEBUG: Published arrival event: {payload}")
 
     except Exception as e:
         session.rollback()
-        print(f"FATAL ERROR in resolve_army_arrival for Army ID {army_id}: {e}")
-        import traceback
-
-        traceback.print_exc()
         raise self.retry(exc=e, countdown=60)
     finally:
         session.close()
@@ -1014,67 +287,42 @@ def resolve_army_arrival(self, army_id: int):
 def dispatch_scout_report(
     game_id: int, army_id_a: int, army_id_b: int, location_name: str
 ):
-    """
-    Fires when two armies are close.
-    """
-    print(f"⚡ Celery: Dispatching scout report for Army {army_id_a} vs {army_id_b}...")
+    """Fires when two armies are close. Includes Locked Channel IDs in payload."""
     session = get_sync_session()
-
     try:
-        army_a = session.query(Army).filter(Army.army_id == army_id_a).first()
-        army_b = session.query(Army).filter(Army.army_id == army_id_b).first()
 
-        if not army_a or not army_b:
-            print("⚠️ One or more armies gone. Aborting alert.")
-            return
-
-        # 3. Helper to get Notification Data
-        def get_party_data(army):
-            house = session.query(House).filter(House.house_id == army.house_id).first()
-            owner = (
-                session.query(User)
+        def get_party_info(a_id):
+            army = session.query(Army).get(a_id)
+            player = (
+                session.query(User.discord_id, GamePlayer.private_channel_id)
                 .join(GamePlayer)
-                .filter(
+                .where(
                     GamePlayer.claimed_house_id == army.house_id,
-                    GamePlayer.is_primary == True,
+                    GamePlayer.game_id == game_id,
                 )
                 .first()
             )
-
-            # --- THIS IS THE CORRECTED PART ---
             return {
-                "house_name": house.name,
-                "owner_id": owner.discord_id if owner else None,
+                "house_name": army.house.name,
+                "owner_id": player.discord_id if player else None,
+                "private_channel_id": player.private_channel_id if player else None,
                 "commander": army.commander_name,
                 "troops": army.troop_count,
-                # FIX 1: Create the 'is_moving' boolean key the listener expects.
-                "is_moving": army.status in ["MARCHING", "SAILING"],
-                # FIX 2: Add the 'army_type' key the listener also needs.
                 "army_type": army.army_type,
+                "is_moving": army.status in ["MARCHING", "SAILING"],
             }
-            # --- END OF CORRECTION ---
 
-        party_a = get_party_data(army_a)
-        party_b = get_party_data(army_b)
+        party_a = get_party_info(army_id_a)
+        party_b = get_party_info(army_id_b)
+        game = session.query(Game).get(game_id)
 
-        house_a_obj = (
-            session.query(House).filter(House.house_id == army_a.house_id).first()
-        )
-        guild_id = house_a_obj.game.guild_id
-
-        # 4. Publish to Redis (Payload is now correctly formatted)
         payload = {
-            "type": "INTERCEPTION",  # This should match your listener's expected type
-            "guild_id": guild_id,
+            "type": "INTERCEPTION",
+            "guild_id": game.guild_id,
             "location": location_name,
             "parties": [party_a, party_b],
         }
-
         REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-        print(f"📡 Interception Event Published.")
-
-    except Exception as e:
-        print(f"❌ Scout Task Error: {e}")
     finally:
         session.close()
 
@@ -1083,118 +331,64 @@ def dispatch_scout_report(
 def dispatch_gate_alert(
     game_id: int, army_id: int, gate_name: str, gate_owner_house_id: int
 ):
-    """
-    FIRES WHEN AN ARMY REACHES A GATE.
-    It halts the army in the database and then publishes an event to Redis,
-    prompting the defender (via the bot) to make a "Grant" or "Deny" decision.
-    """
-    print(
-        f"--- GATE ARRIVAL: Army {army_id} has reached {gate_name}. Halting and notifying defender. ---"
-    )
+    """Halts army at a gate and pings defender's locked quarters."""
     session = get_sync_session()
-
     try:
-        # Eagerly load related data for efficiency
-        army = (
-            session.query(Army)
-            .options(selectinload(Army.house).selectinload(House.game))
-            .filter(Army.army_id == army_id)
-            .first()
-        )
-
-        # Validation: If army was already stopped or deleted, do nothing.
+        army = session.query(Army).options(selectinload(Army.house)).get(army_id)
         if not army or army.status not in ["MARCHING", "SAILING"]:
-            print(
-                f"DEBUG: Army {army_id} is already stopped or does not exist. Aborting gate halt."
-            )
             return
 
-        # --- 1. HALT THE ARMY AT THE GATE ---
-        # Find the gate's coordinates to update the army's location accurately
+        # 1. Halt exactly at gate
         gate_fief = (
             session.query(Fief)
             .filter(Fief.name.ilike(gate_name), Fief.game_id == game_id)
             .first()
         )
         if gate_fief:
-            army.location_x = gate_fief.location_x
-            army.location_y = gate_fief.location_y
-        else:
-            print(
-                f"CRITICAL WARNING: Could not find Fief for gate '{gate_name}'. Army will be halted at its current predicted position."
+            army.location_x, army.location_y = (
+                gate_fief.location_x,
+                gate_fief.location_y,
             )
 
-        army.status = "IDLE"  # Army is now officially stopped.
-        print(f"DEBUG: Army {army_id} status set to IDLE.")
-
-        # --- 2. REVOKE THE FINAL ARRIVAL TASK ---
+        army.status = "IDLE"
         if army.task_id:
-            print(
-                f"DEBUG: Revoking final arrival task ({army.task_id}) for army {army_id}."
-            )
-            # Use terminate=True, but NO signal='SIGKILL' for Windows compatibility
             AsyncResult(army.task_id, app=celery_app).revoke(terminate=True)
-            army.task_id = None  # Clear the revoked task ID
+        army.destination_x = army.destination_y = army.arrival_time = (
+            army.departure_time
+        ) = army.task_id = None
 
-        # Clear current movement data. The original_destination fields are preserved.
-        army.destination_x = None
-        army.destination_y = None
-        army.arrival_time = None
-        army.departure_time = None
-
-        session.commit()
-
-        # --- 3. PUBLISH 'REQUEST FOR DECISION' TO REDIS ---
-        # This payload tells the bot to show the "Grant" / "Deny" buttons.
-        marcher_house = army.house
-        defender_house = (
-            session.query(House).filter(House.house_id == gate_owner_house_id).first()
-        )
-        defender_player = (
-            session.query(GamePlayer)
-            .filter(
+        # 2. Find Defender's Locked Quarters
+        defender = (
+            session.query(User.discord_id, GamePlayer.private_channel_id, House.name)
+            .join(GamePlayer, User.user_id == GamePlayer.user_id)
+            .join(House, House.house_id == GamePlayer.claimed_house_id)
+            .where(
                 GamePlayer.claimed_house_id == gate_owner_house_id,
                 GamePlayer.game_id == game_id,
             )
             .first()
         )
-        defender_user = None
-        if defender_player:
-            defender_user = (
-                session.query(User)
-                .filter(User.user_id == defender_player.user_id)
-                .first()
-            )
 
         payload = {
             "type": "GATE_ALERT",
-            "guild_id": marcher_house.game.guild_id,
+            "guild_id": army.house.game.guild_id,
             "attacking_army_id": army.army_id,
             "gate_name": gate_name,
             "marcher": {
-                "house_name": marcher_house.name,
+                "house_name": army.house.name,
                 "commander": army.commander_name,
                 "troops": army.troop_count,
             },
             "defender": {
-                "house_id": defender_house.house_id,
-                "house_name": defender_house.name,
-                "discord_id": defender_user.discord_id if defender_user else None,
-                "is_npc": defender_user is None,
+                "house_id": gate_owner_house_id,
+                "house_name": defender[2] if defender else "NPC",
+                "discord_id": defender[0] if defender else None,
+                "private_channel_id": defender[1] if defender else None,  # CRITICAL
+                "is_npc": defender is None,
             },
         }
-
         REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-        print(
-            f"✅ Army {army_id} halted. Published GATE_ALERT to Redis for defender decision."
-        )
-
-    except Exception as e:
-        print(f"FATAL ERROR in dispatch_gate_alert (ID: {army_id}): {repr(e)}")
-        import traceback
-
-        traceback.print_exc()
-        session.rollback()
+        session.commit()
     finally:
         session.close()
 
@@ -1289,94 +483,7 @@ def handle_gate_response(army_id: int, action: str):
         session.close()
 
 
-# @celery_app.task
-# def initiate_player_interaction(
-#     game_id: int,
-#     army1_id: int,
-#     army2_id: int,
-#     intercept_time: datetime.datetime,
-#     intercept_x: float,
-#     intercept_y: float,
-# ):
-#     """
-#     Creates the PendingInteraction record and schedules the final resolution task.
-#     Then, it tells the bot (via Redis) to display the UI to the players.
-#     """
-#     session = get_sync_session()
-#     try:
-#         # 1. Check if armies still exist and are marching
-#         army1 = session.query(Army).filter(Army.army_id == army1_id).first()
-#         army2 = session.query(Army).filter(Army.army_id == army2_id).first()
-#         valid_moving_statuses = ["MARCHING", "SAILING", "DOCKED", "IDLE"]
-#         # If one army has been destroyed or stopped, cancel the interaction.
-#         if not army1 or not army2 or army1.status not in valid_moving_statuses:
-#             print(
-#                 f"Interaction cancelled: Army {army1_id} or {army2_id} is no longer valid."
-#             )
-#             return
-
-#         existing_interaction = (
-#             session.query(PendingInteraction)
-#             .filter(
-#                 PendingInteraction.game_id == game_id,
-#                 PendingInteraction.status == "PENDING",
-#                 or_(
-#                     (PendingInteraction.army1_id == army1_id)
-#                     & (PendingInteraction.army2_id == army2_id),
-#                     (PendingInteraction.army1_id == army2_id)
-#                     & (PendingInteraction.army2_id == army1_id),
-#                 ),
-#             )
-#             .first()
-#         )
-
-#         if existing_interaction:
-#             print(
-#                 f"DEBUG: Interaction between {army1_id} and {army2_id} already pending (ID: {existing_interaction.id}). Skipping duplicate."
-#             )
-#             return
-
-#         # 2. Create the Database Record
-#         expires_at = intercept_time - datetime.timedelta(
-#             seconds=1
-#         )  # The decision window closes 1s before the intercept
-
-#         new_interaction = PendingInteraction(
-#             game_id=game_id,
-#             army1_id=army1_id,
-#             army2_id=army2_id,
-#             status="PENDING",
-#             expires_at=expires_at,
-#             location_x=intercept_x,
-#             location_y=intercept_y,
-#         )
-#         session.add(new_interaction)
-#         session.flush()  # Flush to get the new_interaction.id
-
-#         # 3. Schedule the resolver task to run when the decision window expires
-#         resolver_task = resolve_player_interaction.apply_async(
-#             args=[new_interaction.id], eta=expires_at
-#         )
-#         new_interaction.resolver_task_id = resolver_task.id
-#         session.commit()
-
-#         # 4. Publish an event to Redis, telling the bot to send the UI
-#         payload = {
-#             "type": "PROMPT_INTERACTION",
-#             "interaction_id": new_interaction.id,
-#         }
-#         REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-#         print(
-#             f"DEBUG: Created PendingInteraction {new_interaction.id} and published to Redis."
-#         )
-
-#     except Exception as e:
-#         print(f"❌ Error in initiate_player_interaction: {e}")
-#         session.rollback()
-#     finally:
-#         session.close()
-
-from sqlalchemy import or_  # Make sure you have this import
+from sqlalchemy import or_
 
 
 @celery_app.task
