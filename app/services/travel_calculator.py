@@ -44,11 +44,16 @@ def get_proportional_speed_mod(army_size: int) -> float:
         return 0.2
 
 
-def calculate_travel_duration(terrain_breakdown_pixels, army_size):
+def calculate_travel_duration(
+    terrain_breakdown_pixels,
+    army_size,
+    house_region: str | None = None,  # <-- NEW ARGUMENT
+):
     """
     Calculates journey duration using smooth proportional scaling.
+    Applies a 10% speed bonus for Ironborn at sea.
     """
-    # Get the smooth modifier
+    # Get the smooth modifier based on army size
     speed_mod = get_proportional_speed_mod(army_size)
 
     total_game_days = 0
@@ -63,14 +68,18 @@ def calculate_travel_duration(terrain_breakdown_pixels, army_size):
         # Get Base Speed (Miles/Day)
         base_speed = BASE_SPEEDS.get(terrain_type, 15)
 
-        # Formula: Miles / (BaseSpeed * Modifier)
-        # Example: 25 miles / (25 * 0.5) = 2 Days
-        days = miles / (base_speed * speed_mod)
+        # --- NEW: IRONBORN BONUS ---
+        regional_bonus = 1.0  # Default: No bonus
+        if house_region == "The Iron Islands" and terrain_type == "sea":
+            regional_bonus = 1.10  # 10% faster
+        # ---------------------------
+
+        # Formula: Miles / (BaseSpeed * SizeMod * RegionalBonus)
+        days = miles / (base_speed * speed_mod * regional_bonus)
 
         total_game_days += days
 
     # Convert to Real Seconds
-    # Ensure REAL_SECONDS_PER_GAME_DAY is set to 2400 in config.py
     total_real_seconds = total_game_days * REAL_SECONDS_PER_GAME_DAY
 
     return int(total_real_seconds)

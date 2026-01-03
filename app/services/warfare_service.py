@@ -3028,6 +3028,10 @@ class WarfareService:
         # 4. PREPARE FLEET & GOLD
         # =================================================================
         house_obj = await self.session.get(House, effective_house_id)
+        house_region = None
+        if house_obj.fiefs:
+            # Assuming the house's primary region is its first fief's region
+            house_region = house_obj.fiefs[0].region
         if gold_to_carry > (house_obj.treasury or 0):
             return False, f"❌ House {house_obj.name} treasury insufficient.", None
 
@@ -3052,7 +3056,9 @@ class WarfareService:
         # 5. EXECUTION & PENDING MARCH
         # =================================================================
         now = datetime.datetime.now(datetime.timezone.utc)
-        sea_dur = calculate_travel_duration(path_data["terrain_breakdown"], ship_count)
+        sea_dur = calculate_travel_duration(
+            path_data["terrain_breakdown"], ship_count, house_region=house_region
+        )
         arrival = now + datetime.timedelta(seconds=sea_dur)
 
         fleet_to_sail.destination_x, fleet_to_sail.destination_y = (
