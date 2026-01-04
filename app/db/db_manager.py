@@ -7,7 +7,7 @@ from app.db.models import Base
 from dotenv import load_dotenv
 
 load_dotenv()
-env_state = os.getenv("APP_ENV", "LOCAL").upper()
+env_state = os.getenv("APP_ENV", "DEV").upper()
 
 if env_state == "DEV":
     DATABASE_URL = os.getenv("DB_URL_DEV")
