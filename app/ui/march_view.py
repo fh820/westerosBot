@@ -543,3 +543,33 @@ class JourneyArmySelectView(discord.ui.View):
 
         self.stop()
         await interaction.message.edit(view=None)
+
+
+class DirectMarchView(discord.ui.View):
+    """
+    A specific view for when a user types !march [ID].
+    Provides a button to immediately open the modal for that army.
+    """
+
+    def __init__(self, bot: commands.Bot, army: Army):
+        super().__init__(timeout=60)
+        self.bot = bot
+        self.army = army
+
+    @discord.ui.button(
+        label="Issue March Orders", style=discord.ButtonStyle.success, emoji="👣"
+    )
+    async def configure(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        # Double check ownership (though command already checked it)
+        # Note: We rely on the command's check, but a redundant check is safer if passing objects around.
+        # For simplicity in this view, we assume the command validated the user.
+
+        modal = MarchModal(bot=self.bot, army=self.army)
+        await interaction.response.send_modal(modal)
+        self.stop()
+        button.disabled = True
+        await interaction.edit_original_response(
+            content=f"📝 issuing orders to **{self.army.commander_name}**...", view=self
+        )

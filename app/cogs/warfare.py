@@ -1363,13 +1363,19 @@ class WarfareCog(commands.Cog):
     # --- PLAYER COMMANDS ---
     @commands.command(name="march")
     @commands.check(is_in_house_channel)
-    async def march(self, ctx):
-        """Initiates the interactive march order UI for LAND armies."""
+    async def march(self, ctx, army_id: int = None):
+        """
+        Initiates march orders for LAND armies.
+        Usage:
+        !march          (Select from menu)
+        !march [ID]     (Shortcut to specific army)
+        """
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
+            # Get Player
             player = await session.scalar(
                 select(GamePlayer)
                 .join(User)
@@ -1377,10 +1383,38 @@ class WarfareCog(commands.Cog):
                     User.discord_id == ctx.author.id, GamePlayer.game_id == game.game_id
                 )
             )
-
             if not player or not player.claimed_house_id:
                 return await ctx.send("❌ You do not have a house to command.")
 
+            # --- PATH A: SHORTCUT (!march 123) ---
+            if army_id:
+                army = await ArmyRepo.get_army_by_id(session, army_id)
+
+                # Validation
+                if not army:
+                    return await ctx.send(f"❌ Army ID {army_id} not found.")
+                if army.house_id != player.claimed_house_id:
+                    # Optional: Check for Liege Lord authority here if desired
+                    return await ctx.send(f"❌ You do not command Army {army_id}.")
+                if army.army_type != "LAND":
+                    return await ctx.send(f"❌ Unit {army_id} is a fleet. Use `!sail`.")
+                if army.status not in ["IDLE", "GARRISONED", "RETREATING"]:
+                    return await ctx.send(
+                        f"❌ Army is currently **{army.status}** and cannot receive new orders."
+                    )
+
+                # Create Shortcut View
+                from app.ui.march_view import DirectMarchView
+
+                view = DirectMarchView(self.bot, army)
+
+                return await ctx.send(
+                    f"👣 **Orders for {army.commander_name}** ({army.troop_count} men)\n"
+                    f"Click below to set destination.",
+                    view=view,
+                )
+
+            # --- PATH B: MENU SELECTION (!march) ---
             available_armies = (
                 (
                     await session.execute(
@@ -1399,6 +1433,9 @@ class WarfareCog(commands.Cog):
                 return await ctx.send(
                     "You have no idle land armies available to march."
                 )
+
+            # Import locally to avoid circulars if necessary, or ensure top-level import
+            from app.ui.march_view import ArmySelectView
 
             view = ArmySelectView(bot=self.bot, armies=available_armies)
 
@@ -2079,15 +2116,16 @@ class WarfareCog(commands.Cog):
     ):
         """
         GM: March an NPC army.
-        Interactive: !gm_war march [HouseID]
-        Manual: !gm_war march [HouseID] [ArmyID] [Destination] ...
+        1. Select:   !gm_war march [HouseID]
+        2. Shortcut: !gm_war march [HouseID] [ArmyID]
+        3. Manual:   !gm_war march [HouseID] [ArmyID] [Destination] ...
         """
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
-            # --- INTERACTIVE MODE ---
+            # --- CASE 1: INTERACTIVE MENU (No Army ID) ---
             if army_id is None:
                 armies = (
                     (
@@ -2095,6 +2133,7 @@ class WarfareCog(commands.Cog):
                             select(Army).where(
                                 Army.house_id == target_house_id,
                                 Army.status.in_(["IDLE", "GARRISONED", "RETREATING"]),
+                                Army.army_type == "LAND",  # Only show land armies
                             )
                         )
                     )
@@ -2104,10 +2143,9 @@ class WarfareCog(commands.Cog):
 
                 if not armies:
                     return await ctx.send(
-                        f"❌ House {target_house_id} has no idle armies."
+                        f"❌ House {target_house_id} has no idle land armies."
                     )
 
-                # Import view locally to avoid circular imports if necessary
                 from app.ui.gm_march_view import GMMarchArmySelectView
 
                 view = GMMarchArmySelectView(self.bot, armies, target_house_id)
@@ -2116,12 +2154,32 @@ class WarfareCog(commands.Cog):
                 )
                 return
 
-            # --- MANUAL MODE ---
-            if not dest_name:
-                return await ctx.send(
-                    "❌ Usage: `!gm_war march [HouseID] [ArmyID] [Destination]`"
-                )
+            # --- CASE 2: SHORTCUT UI (Army ID, but NO Destination) ---
+            if army_id is not None and dest_name is None:
+                army = await ArmyRepo.get_army_by_id(session, army_id)
 
+                # Validation
+                if not army:
+                    return await ctx.send(f"❌ Army {army_id} not found.")
+                if army.house_id != target_house_id:
+                    return await ctx.send(
+                        f"❌ Army {army_id} does not belong to House {target_house_id}."
+                    )
+                if army.army_type != "LAND":
+                    return await ctx.send("❌ Unit is a fleet. Use `!gm_war sail`.")
+
+                # Import new view
+                from app.ui.gm_march_view import DirectGMMarchView
+
+                view = DirectGMMarchView(self.bot, army, target_house_id)
+                await ctx.send(
+                    f"👣 **GM Override:** Orders for {army.commander_name} (ID: {army.army_id})\n"
+                    f"Click below to set destination.",
+                    view=view,
+                )
+                return
+
+            # --- CASE 3: MANUAL EXECUTION (All Args Provided) ---
             gm_user_obj = await session.scalar(
                 select(User).where(User.discord_id == ctx.author.id)
             )
@@ -2143,9 +2201,9 @@ class WarfareCog(commands.Cog):
             )
 
             if success:
-                # 1. GM Feedback (Private)
+                # 1. GM Feedback
                 response_embed = discord.Embed(
-                    title=f"✅ GM Command: NPC March Order (House {target_house_id})",
+                    title=f"✅ GM March Order: House {target_house_id}",
                     description=f"**{result_or_msg['commander']}** ({result_or_msg['count']} men) -> **{result_or_msg['destination']}**.",
                     color=discord.Color.green(),
                 )
@@ -2168,14 +2226,12 @@ class WarfareCog(commands.Cog):
                 else:
                     await ctx.send(embed=response_embed)
 
-                # 2. Public Fog of War (general-movements)
+                # 2. Public Fog of War
                 if fog_msg:
-                    # FIX: Correct channel name
                     gen_channel = discord.utils.get(
                         ctx.guild.text_channels, name="general-movements"
                     )
                     if gen_channel:
-                        # FIX: Send raw message so it looks like a rumor, not a GM log
                         await gen_channel.send(fog_msg)
             else:
                 await ctx.send(f"❌ GM Command Failed: {result_or_msg}")

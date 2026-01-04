@@ -318,3 +318,36 @@ class GMMarchArmySelectView(View):
 
         self.stop()
         await interaction.message.delete()
+
+
+class DirectGMMarchView(discord.ui.View):
+    """
+    Shows a button to configure a specific army directly.
+    """
+
+    def __init__(self, bot, army, target_house_id):
+        super().__init__(timeout=60)
+        self.bot = bot
+        self.army = army
+        self.target_house_id = target_house_id
+
+    @discord.ui.button(
+        label="Issue March Orders", style=discord.ButtonStyle.success, emoji="👣"
+    )
+    async def configure(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message(
+                "❌ GM Only.", ephemeral=True
+            )
+
+        # Pass the FULL army object to the modal
+        modal = GMMarchModal(self.bot, self.army, self.target_house_id)
+        await interaction.response.send_modal(modal)
+
+        self.stop()
+        button.disabled = True
+        await interaction.edit_original_response(
+            content=f"📝 GM Ordering **{self.army.commander_name}**...", view=self
+        )
