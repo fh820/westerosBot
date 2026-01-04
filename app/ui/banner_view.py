@@ -83,13 +83,12 @@ class VassalSelect(Select):
     def __init__(self, pending_call: PendingBannerCall):
         self.pending_call = pending_call
         is_sea = pending_call.call_type == "SEA"
-        unit_name, unit_key = (
-            ("ships", "max_troops") if is_sea else ("troops", "max_troops")
-        )
+        unit_name = "ships" if is_sea else "troops"
         options = []
         # Filter vassals that actually have troops/ships to contribute
         for v in pending_call.vassal_data:
-            if v.get(unit_key, 0) > 0:
+            max_val = v.get("max_troops") or v.get("max_ships") or 0
+            if max_val > 0:
                 label = v["house_name"]
                 # Truncate label if too long
                 if len(label) > 25:
@@ -99,7 +98,7 @@ class VassalSelect(Select):
                     discord.SelectOption(
                         label=label,
                         value=str(v["house_id"]),
-                        description=f"{int(v['percent']*100)}% of {v.get(unit_key, 0)} {unit_name}",
+                        description=f"{int(v['percent']*100)}% of {max_val} {unit_name}",
                     )
                 )
 
@@ -207,7 +206,7 @@ class BannerControlView(View):
         # 3. List Vassals
         vassal_lines, total_units = [], 0
         for v in pending_call.vassal_data:
-            max_val = v.get(unit_key, 0)
+            max_val = v.get("max_troops") or v.get("max_ships") or 0
             if max_val > 0:
                 units_to_send = int(max_val * v["percent"])
                 total_units += units_to_send

@@ -672,9 +672,7 @@ class DiplomacyCog(commands.Cog):
                     {
                         "house_id": v["house_id"],
                         "house_name": v["house_name"],
-                        "max_troops": v[
-                            "max_amount"
-                        ],  # Rename key to match UI expectations
+                        "max_troops": v["max_amount"],
                         "percent": v["percent"],
                         "home_x": v.get("home_x", 0),
                         "home_y": v.get("home_y", 0),
@@ -1214,6 +1212,7 @@ class DiplomacyCog(commands.Cog):
                     channel_id=ctx.channel.id,
                     message_id=player_wait_msg.id,
                     gm_channel_id=gm_channel.id,
+                    gm_message_id=0,
                     liege_house_id=target_house_id,
                     rally_point_name=rally_point,
                     vassal_data=vassal_data_for_db,
@@ -1316,7 +1315,7 @@ class DiplomacyCog(commands.Cog):
                     {
                         "house_id": v["house_id"],
                         "house_name": v["house_name"],
-                        "max_ships": v["max_amount"],  # Standardized from service
+                        "max_troops": v["max_amount"],
                         "percent": v["percent"],
                         "home_x": v.get("home_x", 0),
                         "home_y": v.get("home_y", 0),
@@ -1330,6 +1329,7 @@ class DiplomacyCog(commands.Cog):
                     channel_id=ctx.channel.id,
                     message_id=player_wait_msg.id,
                     gm_channel_id=gm_channel.id,
+                    gm_message_id=0,
                     liege_house_id=target_house_id,
                     rally_point_name=rally_point,
                     vassal_data=vassal_data_for_db,

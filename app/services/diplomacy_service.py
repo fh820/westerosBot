@@ -191,14 +191,16 @@ class DiplomacyService:
     async def prepare_banner_call(
         self, game_id, liege_discord_id=None, acting_house_id=None, is_gm_override=False
     ):
-        """Phase 1: Gather Land Vassals and their Locked Channel IDs recursively."""
+        """
+        Phase 1: Gathers vassals and correctly separates them into Player and NPC groups.
+        """
         liege_house, liege_player = await self._get_caller_context(
             game_id, liege_discord_id, acting_house_id, is_gm_override
         )
         if not liege_house:
             return False, "❌ House not found.", []
 
-        # Landed Lord Check
+        # --- (Landed Lord Check is correct) ---
         stmt_land = select(Fief.fief_id).where(Fief.owner_id == liege_house.house_id)
         if (
             not (await self.session.execute(stmt_land)).scalars().first()
@@ -206,86 +208,74 @@ class DiplomacyService:
         ):
             return False, "❌ You have no land and therefore no banners to call.", []
 
-        async def process_house_tree(house_obj):
-            # Check for Player Owner and fetch locked ID
-            stmt_owner = (
-                select(User.discord_id, Character.name, GamePlayer.private_channel_id)
-                .select_from(GamePlayer)
-                .join(
-                    GamePlayer.user
-                )  # Uses the 'user' relationship defined in GamePlayer model
-                .outerjoin(GamePlayer.character)  # Uses the 'character' relationship
-                .where(
-                    GamePlayer.game_id == game_id,
-                    GamePlayer.claimed_house_id == house_obj.house_id,
-                )
+        # 1. Get ALL direct vassals first.
+        stmt_direct_vassals = select(House).where(
+            House.liege_id == liege_house.house_id, House.is_ruined == False
+        )
+        direct_vassals = (
+            (await self.session.execute(stmt_direct_vassals)).scalars().all()
+        )
+
+        # 2. Get a map of all player-controlled houses.
+        stmt_players = (
+            select(
+                GamePlayer.claimed_house_id,
+                User.discord_id,
+                Character.name,
+                GamePlayer.private_channel_id,
             )
-            owner_res = (await self.session.execute(stmt_owner)).first()
+            .join(User)
+            .outerjoin(Character, GamePlayer.character_id == Character.char_id)
+            .where(GamePlayer.game_id == game_id)
+        )
+        player_map = {
+            p.claimed_house_id: p for p in await self.session.execute(stmt_players)
+        }
 
-            if owner_res:
-                disc_id, char_name, chan_id = owner_res
-                # Filter out landless courtiers
-                v_land = (
-                    (
-                        await self.session.execute(
-                            select(Fief.fief_id).where(
-                                Fief.owner_id == house_obj.house_id
-                            )
-                        )
-                    )
-                    .scalars()
-                    .first()
+        player_notifs = []
+        npc_vassals_to_process = []
+
+        # 3. Separate vassals into Player and NPC lists.
+        for vassal in direct_vassals:
+            if vassal.house_id in player_map:
+                player_data = player_map[vassal.house_id]
+                player_notifs.append(
+                    {
+                        "house_name": vassal.name,
+                        "character_name": player_data.name,
+                        "user_id": player_data.discord_id,
+                        "private_channel_id": player_data.private_channel_id,
+                    }
                 )
-                if not v_land:
-                    return 0, [], []
+            else:
+                npc_vassals_to_process.append(vassal)
 
-                return (
-                    0,
-                    [],
-                    [
-                        {
-                            "house_name": house_obj.name,
-                            "character_name": char_name,
-                            "user_id": disc_id,
-                            "private_channel_id": chan_id,  # LOCKED ID
-                        }
-                    ],
-                )
-
-            # NPC Calculation
+        # Recursive function to calculate ONLY NPC troop counts.
+        async def get_npc_tree_troops(house_obj):
             stmt_a = select(func.sum(Army.troop_count)).where(
                 Army.house_id == house_obj.house_id,
                 Army.army_type == "LAND",
-                Army.status.in_(["GARRISONED", "IDLE"]),
+                Army.status.in_(["GARRISONED"]),
             )
-            tree_troops = (await self.session.execute(stmt_a)).scalar() or 0
-
-            tree_breakdown, tree_notifs = [], []
+            total_troops = (await self.session.execute(stmt_a)).scalar() or 0
             stmt_sub = select(House).where(
                 House.liege_id == house_obj.house_id, House.is_ruined == False
             )
-            for sub in (await self.session.execute(stmt_sub)).scalars().all():
-                s_troops, s_names, s_notifs = await process_house_tree(sub)
-                tree_troops += s_troops
-                tree_breakdown.extend(s_names if s_troops > 0 else [])
-                tree_notifs.extend(s_notifs)
+            for sub_vassal in (await self.session.execute(stmt_sub)).scalars().all():
+                if sub_vassal.house_id not in player_map:
+                    total_troops += await get_npc_tree_troops(sub_vassal)
+            return total_troops
 
-            return tree_troops, tree_breakdown, tree_notifs
-
-        # Execute walk
-        npc_data, player_notifs = [], []
+        # Process the confirmed NPC vassals
+        npc_data = []
         dip_stat = (
             int(liege_player.character.skills.get("diplomacy", 10))
             if liege_player and liege_player.character
             else 10
         )
 
-        stmt_direct = select(House).where(
-            House.liege_id == liege_house.house_id, House.is_ruined == False
-        )
-        for vassal in (await self.session.execute(stmt_direct)).scalars().all():
-            troops, breakdown, notifs = await process_house_tree(vassal)
-            player_notifs.extend(notifs)
+        for vassal in npc_vassals_to_process:
+            troops = await get_npc_tree_troops(vassal)
             if troops > 0:
                 stmt_home = (
                     select(Fief)
@@ -294,11 +284,12 @@ class DiplomacyService:
                     .limit(1)
                 )
                 home = (await self.session.execute(stmt_home)).scalars().first()
-
                 score = 30 + (dip_stat * 2) + (10 if liege_house.treasury > 5000 else 0)
+
+                # This dictionary is where the error was originating.
                 npc_data.append(
                     {
-                        "house_id": vassal.house_id,
+                        "house_id": vassal.house_id,  # <-- THIS IS THE CRITICAL LINE
                         "house_name": vassal.name,
                         "max_amount": troops,
                         "percent": (
@@ -308,7 +299,7 @@ class DiplomacyService:
                         ),
                         "home_x": home.location_x if home else 0,
                         "home_y": home.location_y if home else 0,
-                        "breakdown": ", ".join(breakdown),
+                        "breakdown": "",
                     }
                 )
 
@@ -467,169 +458,167 @@ class DiplomacyService:
     async def prepare_sea_levy_call(
         self, game_id, liege_discord_id=None, acting_house_id=None, is_gm_override=False
     ):
-        print(f"\n--- [DEBUG] STARTING NAVAL CALL ---")
+        """
+        DEBUG VERSION: Prepares a naval levy by correctly separating Player and NPC vassals.
+        """
+        print(f"\n=== 🌊 DEBUG: STARTING NAVAL CALL ===")
         liege_house, liege_player = await self._get_caller_context(
             game_id, liege_discord_id, acting_house_id, is_gm_override
         )
         if not liege_house:
-            print("--- [DEBUG] Error: Liege House not found.")
+            print("❌ [DEBUG] Liege House not found.")
             return False, "❌ House not found.", []
 
-        print(
-            f"--- [DEBUG] Caller: House {liege_house.name} (ID: {liege_house.house_id})"
+        print(f"👑 [DEBUG] Liege: {liege_house.name} (ID: {liege_house.house_id})")
+
+        # 1. Get all direct vassals.
+        stmt_direct_vassals = select(House).where(
+            House.liege_id == liege_house.house_id, House.is_ruined == False
         )
+        direct_vassals = (
+            (await self.session.execute(stmt_direct_vassals)).scalars().all()
+        )
+        print(f"📂 [DEBUG] Found {len(direct_vassals)} direct vassals.")
 
-        async def process_sea_tree(house_obj, depth=1):
-            indent = "  " * depth
-            print(
-                f"{indent}> Checking House: {house_obj.name} (ID: {house_obj.house_id})"
+        # 2. Get a map of all player-controlled houses.
+        stmt_players = (
+            select(
+                GamePlayer.claimed_house_id,
+                User.discord_id,
+                Character.name,
+                GamePlayer.private_channel_id,
             )
+            .join(User)
+            .outerjoin(Character, GamePlayer.character_id == Character.char_id)
+            .where(GamePlayer.game_id == game_id)
+        )
+        player_map = {
+            p.claimed_house_id: p for p in await self.session.execute(stmt_players)
+        }
 
-            # 1. Player Check
-            stmt_owner = (
-                select(User.discord_id, Character.name, GamePlayer.private_channel_id)
-                .select_from(GamePlayer)
-                .join(GamePlayer.user)
-                .outerjoin(GamePlayer.character)
-                .where(
-                    GamePlayer.game_id == game_id,
-                    GamePlayer.claimed_house_id == house_obj.house_id,
-                )
+        player_notifs = []
+        npc_vassals_to_process = []
+
+        # 3. Explicitly separate vassals into Player and NPC lists.
+        print(f"🔎 [DEBUG] Scanning direct vassals...")
+        for vassal in direct_vassals:
+            # DEBUG: Print everyone to see if Shield Islands exist
+            print(f"   > Checking {vassal.name} (ID: {vassal.house_id})...")
+
+            # Check if the vassal has any ships at all before proceeding
+            stmt_has_ships = (
+                select(Army.army_id)
+                .where(Army.house_id == vassal.house_id, Army.army_type == "SEA")
+                .limit(1)
             )
-            owner_res = (await self.session.execute(stmt_owner)).first()
+            has_ships = (await self.session.execute(stmt_has_ships)).scalar()
 
-            if owner_res:
-                print(f"{indent}  - Result: This is a PLAYER house.")
-                disc_id, char_name, chan_id = owner_res
-                v_ships = (
-                    (
-                        await self.session.execute(
-                            select(Army.army_id).where(
-                                Army.house_id == house_obj.house_id,
-                                Army.army_type == "SEA",
-                            )
-                        )
-                    )
-                    .scalars()
-                    .first()
-                )
+            if not has_ships:
+                print(f"     [SKIP] {vassal.name} has no SEA armies in DB.")
+                # Note: This optimization skips houses that have no ships THEMSELVES,
+                # even if their sub-vassals might have ships.
+                # If Shield Islands are sub-vassals of a landlocked lord, they get skipped here.
+                continue
 
-                if not v_ships:
-                    print(f"{indent}  - Skip: Player has no ships.")
-                    return 0, [], [], None
-
-                print(f"{indent}  - Success: Player vassal added to notifications.")
-                return (
-                    0,
-                    [],
-                    [
-                        {
-                            "house_name": house_obj.name,
-                            "character_name": char_name,
-                            "user_id": disc_id,
-                            "private_channel_id": chan_id,
-                        }
-                    ],
-                    None,
-                )
-
-            # 2. NPC Calculation
-            # First, let's find ALL sea armies for this house to see what exists in DB
-            stmt_all = select(Army).where(
-                Army.house_id == house_obj.house_id, Army.army_type == "SEA"
-            )
-            all_fleets = (await self.session.execute(stmt_all)).scalars().all()
-
-            if not all_fleets:
-                print(
-                    f"{indent}  - DB Notice: No 'SEA' type armies found in 'armies' table for House ID {house_obj.house_id}."
+            if vassal.house_id in player_map:
+                print(f"     [PLAYER] {vassal.name} is a player.")
+                player_data = player_map[vassal.house_id]
+                player_notifs.append(
+                    {
+                        "house_name": vassal.name,
+                        "character_name": player_data.name,
+                        "user_id": player_data.discord_id,
+                        "private_channel_id": player_data.private_channel_id,
+                    }
                 )
             else:
+                print(f"     [NPC] {vassal.name} added to processing list.")
+                npc_vassals_to_process.append(vassal)
+
+        # Recursive function to get ONLY NPC ship counts and a representative fleet ID.
+        async def get_npc_tree_ships(house_obj):
+            print(f"     --> Recursion: Checking ships for {house_obj.name}")
+
+            # DEBUG: Show ALL fleets for this house regardless of status
+            stmt_debug_all = select(Army).where(
+                Army.house_id == house_obj.house_id, Army.army_type == "SEA"
+            )
+            all_fleets = (await self.session.execute(stmt_debug_all)).scalars().all()
+            if all_fleets:
                 for f in all_fleets:
                     print(
-                        f"{indent}  - DB Found: Fleet ID {f.army_id} | Ships: {f.troop_count} | Status: {f.status}"
+                        f"         * Found Fleet ID {f.army_id}: Status='{f.status}', Troops={f.troop_count}"
                     )
+            else:
+                print(f"         * No fleets found in DB.")
 
-            # Now try the filtered query
-            main_fleet = next(
-                (f for f in all_fleets if f.status in ["GARRISONED"]),
-                None,
+            # Base case: Valid Ships owned directly by this NPC house
+            stmt_fleet = (
+                select(Army)
+                .where(
+                    Army.house_id == house_obj.house_id,
+                    Army.army_type == "SEA",
+                    # DEBUG: I expanded the status check to see if that was the issue
+                    Army.status.in_(["GARRISONED", "IDLE", "DOCKED"]),
+                )
+                .limit(1)
             )
+            main_fleet = (await self.session.execute(stmt_fleet)).scalar_one_or_none()
 
-            current_ships = main_fleet.troop_count if main_fleet else 0
-            current_fleet_id = main_fleet.army_id if main_fleet else None
+            total_ships = main_fleet.troop_count if main_fleet else 0
+            primary_fleet_id = main_fleet.army_id if main_fleet else None
 
-            if current_ships > 0:
+            if total_ships > 0:
                 print(
-                    f"{indent}  - Success: Found {current_ships} ships in Fleet {current_fleet_id}"
+                    f"         -> MATCH! Including {total_ships} ships from Fleet {primary_fleet_id}"
                 )
 
-            tree_breakdown = (
-                [f"{house_obj.name} ({current_ships})"] if current_ships > 0 else []
-            )
-            tree_notifs = []
-
-            # 3. Recursive Walk
+            # Recursive step: Find sub-vassals that are ALSO NPCs
             stmt_sub = select(House).where(
                 House.liege_id == house_obj.house_id, House.is_ruined == False
             )
-            subs = (await self.session.execute(stmt_sub)).scalars().all()
-            print(f"{indent}  - Found {len(subs)} sub-vassals.")
+            for sub_vassal in (await self.session.execute(stmt_sub)).scalars().all():
+                if sub_vassal.house_id not in player_map:
+                    sub_ships, sub_fleet_id = await get_npc_tree_ships(sub_vassal)
+                    total_ships += sub_ships
+                    # If we don't have a fleet ID yet, use the one from the sub-vassal
+                    if not primary_fleet_id:
+                        primary_fleet_id = sub_fleet_id
 
-            for sub in subs:
-                s_ships, s_names, s_notifs, s_f_id = await process_sea_tree(
-                    sub, depth + 1
-                )
-                current_ships += s_ships
-                tree_breakdown.extend(s_names)
-                tree_notifs.extend(s_notifs)
-                if not current_fleet_id:
-                    current_fleet_id = s_f_id
+            return total_ships, primary_fleet_id
 
-            return current_ships, tree_breakdown, tree_notifs, current_fleet_id
-
-        # --- Main Execution Loop ---
-        npc_data, player_notifs = [], []
-
-        # Calculate Dip Stat
-        dip_stat = 10
-        if liege_player and liege_player.character:
-            dip_stat = int(liege_player.character.skills.get("diplomacy", 10))
-        print(f"--- [DEBUG] Liege Diplomacy: {dip_stat}")
-
-        stmt_direct = select(House).where(
-            House.liege_id == liege_house.house_id, House.is_ruined == False
+        # --- Main Execution Loop for NPCs ---
+        npc_data = []
+        dip_stat = (
+            int(liege_player.character.skills.get("diplomacy", 10))
+            if liege_player and liege_player.character
+            else 10
         )
-        direct_vassals = (await self.session.execute(stmt_direct)).scalars().all()
-        print(f"--- [DEBUG] Found {len(direct_vassals)} direct vassals.")
 
-        for vassal in direct_vassals:
-            ships, breakdown, notifs, f_id = await process_sea_tree(vassal)
-            player_notifs.extend(notifs)
-
-            print(
-                f"--- [DEBUG] Result for {vassal.name}: {ships} total ships found in tree."
-            )
+        print(
+            f"\n🔎 [DEBUG] Processing {len(npc_vassals_to_process)} NPC Candidates..."
+        )
+        for vassal in npc_vassals_to_process:
+            ships, f_id = await get_npc_tree_ships(vassal)
 
             if ships > 0:
                 loc_x, loc_y = 0, 0
                 if f_id:
-                    stmt_loc = select(Army.location_x, Army.location_y).where(
-                        Army.army_id == f_id
+                    # Get location from the primary fleet
+                    fleet_location = await self.session.get(
+                        Army, f_id, options=[selectinload(Army.house)]
                     )
-                    loc = (await self.session.execute(stmt_loc)).first()
-                    if loc:
-                        loc_x, loc_y = loc[0], loc[1]
+                    if fleet_location:
+                        loc_x, loc_y = (
+                            fleet_location.location_x,
+                            fleet_location.location_y,
+                        )
 
                 score = 30 + (dip_stat * 2) + (10 if liege_house.treasury > 5000 else 0)
                 percent = (
                     0.9
                     if score >= 80
                     else 0.7 if score >= 60 else 0.3 if score >= 20 else 0.1
-                )
-
-                print(
-                    f"--- [DEBUG] Calculated Percent for {vassal.name}: {percent} (Score: {score})"
                 )
 
                 npc_data.append(
@@ -641,12 +630,13 @@ class DiplomacyService:
                         "home_x": loc_x,
                         "home_y": loc_y,
                         "source_fleet_id": f_id,
-                        "breakdown": ", ".join(breakdown),
+                        "breakdown": f"{vassal.name} ({ships})",
                     }
                 )
+            else:
+                print(f"     [RESULT] {vassal.name} has 0 valid ships.")
 
-        print(f"--- [DEBUG] Final npc_data list contains {len(npc_data)} entries.")
-        print(f"--- [DEBUG] END NAVAL CALL ---\n")
+        print(f"=== 🌊 DEBUG: END ===")
         return True, npc_data, player_notifs
 
     async def check_marriage_authority(

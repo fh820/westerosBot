@@ -226,14 +226,11 @@ class WarfareCog(commands.Cog):
                 await self.handle_gate_alert(data)
             elif data["type"] == "GATE_RESPONSE":
                 if data.get("action") == "GRANT":
-                    # We are now in an async context, so we can call the async service directly.
                     async with get_session() as session:
                         service = WarfareService(session)
                         success, response, fog_msg = (
                             await service.resume_march_from_gate(data["army_id"])
                         )
-
-                        # Optional: Notify the GM or players that the march has resumed
                         if success:
                             print(
                                 f"✅ March resumed for Army {data['army_id']}. New ETA: {response['time']}"
@@ -1215,7 +1212,7 @@ class WarfareCog(commands.Cog):
 
                 public_msg = (
                     f"✅ The forces of {house_display} under the command of **{data['commander']}** "
-                    f"({data['troops']} {unit_noun}) have arrived at **{data['location']}**."
+                    f"have arrived at **{data['location']}**."
                 )
                 await public_channel.send(public_msg)
 
