@@ -676,7 +676,7 @@ class AdminCog(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def force_grant(self, ctx, target: discord.Member, *, castle_name: str):
         """
-        GM Tool: Force transfer a fief, its garrisons, and its vassals to a player's house.
+        GM Tool: Force transfer a fief, its garrisons, its vassals, AND treasury to a player.
         """
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
@@ -707,10 +707,13 @@ class AdminCog(commands.Cog):
             old_owner_house_id = fief.owner_id
             new_house_id = target_p.claimed_house_id
 
-            # 3. Transfer Ownership
+            if old_owner_house_id == new_house_id:
+                return await ctx.send("❌ This house already owns this fief.")
+
+            # 3. Transfer Fief Ownership
             fief.owner_id = new_house_id
 
-            # 4. Transfer Armies (Land & Sea)
+            # 4. Transfer Armies (Land & Sea at that location)
             stmt_army = select(Army).where(
                 Army.game_id == game.game_id,
                 Army.location_x == fief.location_x,
@@ -720,7 +723,7 @@ class AdminCog(commands.Cog):
             for army in armies_at_loc:
                 army.house_id = new_house_id
 
-            # 5. Transfer Vassalage
+            # 5. Transfer Vassalage (Houses sworn to the old owner become sworn to new)
             stmt_vassals = select(House).where(
                 House.liege_id == old_owner_house_id, House.game_id == game.game_id
             )
@@ -728,26 +731,45 @@ class AdminCog(commands.Cog):
             for vassal in vassals:
                 vassal.liege_id = new_house_id
 
+            # 5.5. Transfer Treasury (NEW LOGIC)
+            transferred_gold = 0
+            if old_owner_house_id:
+                # Fetch both houses to handle gold
+                old_house = await session.get(House, old_owner_house_id)
+                new_house = await session.get(House, new_house_id)
+
+                if old_house and new_house:
+                    transferred_gold = old_house.treasury
+                    if transferred_gold > 0:
+                        new_house.treasury += transferred_gold
+                        old_house.treasury = 0
+
             # 6. Commit and Recalculate
             await session.commit()
+
+            # Recalculate manpower since fief/vassals changed
             setup_service = SetupService(session)
             await setup_service.calculate_initial_manpower(game.game_id)
             await session.commit()
 
-            # 7. Notification (The "Step 1" ID fix)
-            # Since we know the target's quarters ID from target_p, we can notify them directly
-            msg = (
+            # 7. Notification
+            msg_header = (
                 f"⚡ **GM Intervention:** **{fief.name}** granted to {target.mention}."
             )
+
             if target_p.private_channel_id:
                 chan = self.bot.get_channel(target_p.private_channel_id)
                 if chan:
                     await chan.send(
-                        f"🏰 **Proclamation:** You have been granted the lordship of **{fief.name}**."
+                        f"🏰 **Proclamation:** You have been granted the lordship of **{fief.name}**.\n"
+                        f"💰 **Treasury Seized:** {transferred_gold} Gold."
                     )
 
             await ctx.send(
-                f"{msg}\n🎖️ {len(armies_at_loc)} garrisons and {len(vassals)} vassals transferred."
+                f"{msg_header}\n"
+                f"🎖️ **{len(armies_at_loc)}** armies transferred.\n"
+                f"🛡️ **{len(vassals)}** vassals transferred.\n"
+                f"💰 **{transferred_gold}** gold transferred."
             )
 
     @commands.command(name="toggleupkeep")
