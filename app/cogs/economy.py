@@ -524,12 +524,14 @@ class EconomyCog(commands.Cog):
         self, ctx, amount: int, target_type: str, *, identifier: str
     ):
         """
-        Transfer gold from your House to an Army or another House.
-        Requests are sent to the recipient's LOCKED private quarters.
+        Send gold FROM your House Treasury TO an Army, Fleet, or another House.
+        Usage:
+        !transfer_gold 500 army 123
+        !transfer_gold 1000 house Stark
         """
         target_type = target_type.upper()
-        if target_type not in ["ARMY", "FIEF", "FLEET"]:
-            return await ctx.send("❌ Type must be `army`, `fleet`, or `fief`.")
+        if target_type not in ["ARMY", "FIEF", "FLEET", "HOUSE"]:
+            return await ctx.send("❌ Type must be `army`, `fleet`, or `house`.")
 
         if amount <= 0:
             return await ctx.send("❌ Amount must be positive.")
@@ -579,27 +581,46 @@ class EconomyCog(commands.Cog):
                 final_target_name = army_name
                 target_owner_id = army.house_id
 
-            elif target_type == "FIEF":
-                stmt_f = (
+            elif target_type in ["FIEF", "HOUSE"]:
+                # Logic to find house by name OR fief name
+                stmt_h = select(House).where(House.game_id == game.game_id)
+
+                # Check if identifier is a Fief Name first
+                stmt_fief = (
                     select(Fief)
                     .where(Fief.game_id == game.game_id, Fief.name.ilike(identifier))
                     .options(selectinload(Fief.owner))
                 )
-                fief = (await session.execute(stmt_f)).scalars().first()
+                fief = (await session.execute(stmt_fief)).scalars().first()
 
-                if not fief or not fief.owner:
+                target_house = None
+                if fief and fief.owner:
+                    target_house = fief.owner
+                else:
+                    # Try House Name directly
+                    target_house = (
+                        (
+                            await session.execute(
+                                stmt_h.where(House.name.ilike(identifier))
+                            )
+                        )
+                        .scalars()
+                        .first()
+                    )
+
+                if not target_house:
                     return await ctx.send(
-                        f"❌ Fief '{identifier}' not found or has no owner."
+                        f"❌ Target House/Fief '{identifier}' not found."
                     )
 
                 final_target_category = "HOUSE"
-                final_target_id = fief.owner.house_id
-                final_target_name = fief.owner.name
-                target_owner_id = fief.owner.house_id
+                final_target_id = target_house.house_id
+                final_target_name = target_house.name
+                target_owner_id = target_house.house_id
 
             # 3. Execution Logic
             if target_owner_id == source_house.house_id:
-                # --- INTERNAL TRANSFER ---
+                # --- INTERNAL TRANSFER (House -> Own Army) ---
                 if final_target_category == "HOUSE":
                     return await ctx.send(
                         "❌ You cannot transfer money from your House to itself."
@@ -622,6 +643,8 @@ class EconomyCog(commands.Cog):
                         GamePlayer.game_id == game.game_id,
                         GamePlayer.claimed_house_id == target_owner_id,
                     )
+                    # FIX: Eagerly load the User to prevent MissingGreenlet error
+                    .options(selectinload(GamePlayer.user))
                 )
                 recip_p = (await session.execute(stmt_recip)).scalars().first()
 
@@ -637,12 +660,13 @@ class EconomyCog(commands.Cog):
                     # Delivered to Recipient's Locked Quarters
                     target_channel = self.bot.get_channel(recip_p.private_channel_id)
 
+                    # Transaction View needs to know who can click it
                     view = TransactionView(
                         source_house.house_id,
                         final_target_category,
                         final_target_id,
                         amount,
-                        approver_discord_id=recip_p.user.discord_id,
+                        approver_discord_id=recip_p.user.discord_id,  # <--- Error was here
                     )
 
                     if target_channel:
@@ -655,9 +679,9 @@ class EconomyCog(commands.Cog):
                             f"✅ **Request Sent:** A raven was dispatched to the private quarters of **{final_target_name}**."
                         )
                     else:
-                        # Fallback for players without a locked channel ID
+                        # Fallback
                         await ctx.send(
-                            f"{recip_p.user.discord_id}, a transfer is waiting for your consent.",
+                            f"✅ **Request Sent:** Waiting for {recip_p.user.display_name} to accept.",
                             embed=embed,
                             view=view,
                         )
@@ -682,6 +706,58 @@ class EconomyCog(commands.Cog):
                         view=view,
                     )
                     await ctx.send("✅ Transfer request sent to GMs for approval.")
+
+    @commands.command(name="deposit_gold")
+    @commands.check(is_in_house_channel)
+    async def deposit_gold(self, ctx, amount: int, army_id: int):
+        """
+        Transfers gold FROM an Army/Fleet TO your House Treasury.
+        Usage: !deposit_gold 500 [ArmyID]
+        """
+        if amount <= 0:
+            return await ctx.send("❌ Amount must be positive.")
+
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            # 1. Verify Player House
+            player_house = await self._get_player_house(session, ctx)
+            if not player_house:
+                return await ctx.send("❌ You do not command a house.")
+
+            # 2. Get Army
+            army = await session.get(Army, army_id)
+            if not army:
+                return await ctx.send(f"❌ Army ID {army_id} not found.")
+
+            # 3. Ownership & Status Check
+            if army.house_id != player_house.house_id:
+                return await ctx.send("❌ You do not own this army.")
+
+            # Optional: Require army to be stationary to deposit?
+            # if army.status not in ["IDLE", "GARRISONED", "DOCKED"]:
+            #     return await ctx.send("❌ Army must be stationary to deposit gold.")
+
+            if (army.treasury or 0) < amount:
+                return await ctx.send(f"❌ Army only has {army.treasury} gold.")
+
+            # 4. Execute Transfer
+            army.treasury -= amount
+            player_house.treasury += amount
+
+            await session.commit()
+
+            embed = discord.Embed(
+                title="💰 Gold Deposited",
+                description=f"**{amount} Gold** has been moved from **{army.commander_name}** to **{player_house.name}**'s treasury.",
+                color=discord.Color.green(),
+            )
+            embed.set_footer(
+                text=f"House Treasury: {player_house.treasury} | Army Treasury: {army.treasury}"
+            )
+            await ctx.send(embed=embed)
 
     @commands.command(name="tax_income")
     @commands.check(is_in_house_channel)
@@ -812,21 +888,119 @@ class EconomyCog(commands.Cog):
 
     @gm_econ.command(name="transfer")
     async def gm_transfer(
-        self, ctx, source_house_id: int, amount: int, target_type: str, target_id: int
+        self,
+        ctx,
+        source_house_id: int,
+        amount: int,
+        target_type: str,
+        *,
+        target_identifier: str,
     ):
-        """GM: Force transfer gold between entities."""
+        """
+        GM: Force transfer gold FROM a House TO an Army, Fleet, or House.
+        Usage:
+        !gm_econ transfer [FromHouseID] [Amount] ARMY [ArmyID]
+        !gm_econ transfer [FromHouseID] [Amount] FIEF "Winterfell"
+        !gm_econ transfer [FromHouseID] [Amount] HOUSE [ToHouseID]
+        """
         target_type = target_type.upper()
         if target_type == "FLEET":
             target_type = "ARMY"
-        if target_type not in ["ARMY", "HOUSE"]:
-            return await ctx.send("❌ Target type must be ARMY or HOUSE.")
+        if target_type not in ["ARMY", "HOUSE", "FIEF"]:
+            return await ctx.send("❌ Target type must be ARMY, FLEET, HOUSE, or FIEF.")
 
         async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            final_type = target_type
+            final_id = target_identifier
+
+            # Handle FIEF lookup to find the House ID
+            if target_type == "FIEF":
+                stmt = select(Fief).where(
+                    Fief.name.ilike(target_identifier), Fief.game_id == game.game_id
+                )
+                fief = (await session.execute(stmt)).scalars().first()
+                if not fief or not fief.owner_id:
+                    return await ctx.send(
+                        f"❌ Fief '{target_identifier}' not found or unowned."
+                    )
+
+                final_type = "HOUSE"
+                final_id = fief.owner_id
+
+            # Handle standard ID conversion
+            elif target_type in ["ARMY", "HOUSE"]:
+                if not str(target_identifier).isdigit():
+                    return await ctx.send(
+                        "❌ Identifier must be an ID (number) for ARMY or HOUSE types."
+                    )
+                final_id = int(target_identifier)
+
+            # Execute via Service
             service = EconomyService(session)
             success, msg = await service.execute_transfer(
-                source_house_id, target_type, target_id, amount
+                source_house_id, final_type, final_id, amount
             )
-            await ctx.send(msg if success else f"❌ Error: {msg}")
+
+            if success:
+                embed = discord.Embed(description=msg, color=discord.Color.green())
+                await ctx.send(embed=embed)
+            else:
+                await ctx.send(f"❌ Error: {msg}")
+
+    @gm_econ.command(name="deposit")
+    async def gm_deposit(
+        self, ctx, amount: int, army_id: int, target_house_id: int = None
+    ):
+        """
+        GM: Force transfer gold FROM an Army TO a House.
+        If target_house_id is blank, goes to the army's owner.
+        Usage: !gm_econ deposit 500 [ArmyID] (Optional: [TargetHouseID])
+        """
+        if amount <= 0:
+            return await ctx.send("❌ Amount must be positive.")
+
+        async with get_session() as session:
+            army = await session.get(Army, army_id)
+            if not army:
+                return await ctx.send(f"❌ Army ID {army_id} not found.")
+
+            # Determine Destination House
+            dest_house_id = target_house_id if target_house_id else army.house_id
+            destination_house = await session.get(House, dest_house_id)
+
+            if not destination_house:
+                return await ctx.send(
+                    f"❌ Destination House ID {dest_house_id} not found."
+                )
+
+            # Validate Funds
+            current_gold = army.treasury or 0
+            if current_gold < amount:
+                return await ctx.send(f"❌ Army only has {current_gold} gold.")
+
+            # Execute Transfer
+            army.treasury -= amount
+            destination_house.treasury += amount
+
+            await session.commit()
+
+            embed = discord.Embed(
+                title="💰 GM Deposit Executed",
+                description=f"Transferred **{amount} Gold** from **{army.commander_name}** to **{destination_house.name}**.",
+                color=discord.Color.green(),
+            )
+            embed.add_field(
+                name="Army Remaining", value=f"{army.treasury}", inline=True
+            )
+            embed.add_field(
+                name="House Total", value=f"{destination_house.treasury}", inline=True
+            )
+
+            await ctx.send(embed=embed)
 
     @commands.command(name="set_tax")
     @commands.check(is_in_house_channel)
@@ -1118,6 +1292,204 @@ class EconomyCog(commands.Cog):
                 house_str = "None"
 
             embed.add_field(name="Specific Houses", value=house_str, inline=False)
+            await ctx.send(embed=embed)
+
+    @gm_econ.command(name="sell")
+    async def gm_sell(
+        self, ctx, house_identifier: str, army_id: int, unit_type: str, amount: int
+    ):
+        """
+        GM: Sell units on behalf of a House (Refunds Gold/Manpower).
+        Usage: !gm_econ sell Stark 123 infantry 500
+        """
+        unit_type = unit_type.lower()
+        if amount <= 0:
+            return await ctx.send("❌ Amount must be positive.")
+        if unit_type not in VALID_UNITS:
+            return await ctx.send(
+                f"❌ Invalid unit type. Options: `{', '.join(VALID_UNITS)}`"
+            )
+
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            # 1. Find House
+            house = await HouseRepo.get_house_by_name_or_id(session, house_identifier)
+            if not house or house.game_id != game.game_id:
+                return await ctx.send(f"❌ House '{house_identifier}' not found.")
+
+            # 2. Find Army
+            army = await session.get(Army, army_id)
+            if not army:
+                return await ctx.send(f"❌ Army ID {army_id} not found.")
+
+            # 3. Ownership Check
+            if army.house_id != house.house_id:
+                return await ctx.send(
+                    f"❌ Army {army_id} does not belong to {house.name}."
+                )
+
+            # 4. Check Inventory
+            current_amt = army.composition.get(unit_type, 0)
+            if current_amt < amount:
+                return await ctx.send(f"❌ Army only has {current_amt} {unit_type}.")
+
+            # 5. Calculate Refunds
+            prices = UNIT_PRICES[unit_type]
+            gold_refund = amount * prices["sell"]
+            manpower_refund = amount * prices["manpower_cost"]
+
+            # 6. Execute Transaction
+            house.treasury += gold_refund
+            house.manpower += manpower_refund
+
+            army.composition[unit_type] -= amount
+            if army.composition[unit_type] <= 0:
+                del army.composition[unit_type]
+            army.troop_count -= amount
+            flag_modified(army, "composition")
+
+            response_text = (
+                f"Sold **{amount} {unit_type}** from **{army.commander_name}**.\n"
+                f"💰 **Refunded:** {gold_refund} Gold | 🛡️ **Manpower:** +{manpower_refund}"
+            )
+
+            # Delete if empty
+            if army.troop_count <= 0:
+                await session.delete(army)
+                response_text += "\n⚠️ Army disbanded (0 troops)."
+
+            await session.commit()
+
+            embed = discord.Embed(
+                description=f"✅ **GM Transaction:** {response_text}",
+                color=discord.Color.green(),
+            )
+            embed.set_footer(text=f"{house.name} Treasury: {house.treasury}")
+            await ctx.send(embed=embed)
+
+    @gm_econ.command(name="buy")
+    async def gm_buy(
+        self,
+        ctx,
+        house_identifier: str,
+        fief_name: str,
+        unit_type: str,
+        amount: int,
+        *flags,
+    ):
+        """
+        GM: Recruit units for a House (Deducts Gold/Manpower unless 'free').
+        Usage:
+        !gm_econ buy Stark Winterfell infantry 100
+        !gm_econ buy Stark Winterfell infantry 100 free
+        """
+        unit_type = unit_type.lower()
+        if amount <= 0:
+            return await ctx.send("❌ Amount must be positive.")
+        if unit_type not in VALID_UNITS:
+            return await ctx.send(
+                f"❌ Invalid unit type. Options: `{', '.join(VALID_UNITS)}`"
+            )
+
+        # Check for 'free' flag
+        is_free = "free" in [f.lower() for f in flags]
+
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            # 1. Find House
+            house = await HouseRepo.get_house_by_name_or_id(session, house_identifier)
+            if not house or house.game_id != game.game_id:
+                return await ctx.send(f"❌ House '{house_identifier}' not found.")
+
+            # 2. Find Fief
+            stmt_fief = select(Fief).where(
+                Fief.game_id == game.game_id, Fief.name.ilike(fief_name)
+            )
+            fief = (await session.execute(stmt_fief)).scalars().first()
+            if not fief:
+                return await ctx.send(f"❌ Fief '{fief_name}' not found.")
+
+            # 3. Calculate Costs
+            prices = UNIT_PRICES[unit_type]
+            gold_cost = amount * prices["buy"]
+            manpower_cost = amount * prices["manpower_cost"]
+
+            # 4. Process Costs (Unless Free)
+            cost_msg = "**(Free)**"
+            if not is_free:
+                # Validate Funds
+                if house.treasury < gold_cost:
+                    return await ctx.send(
+                        f"❌ **Insufficient Gold:** {house.name} has {house.treasury}, needs {gold_cost}.\n"
+                        f"Use `... {amount} free` to bypass."
+                    )
+                if house.manpower < manpower_cost:
+                    return await ctx.send(
+                        f"❌ **Insufficient Manpower:** {house.name} has {house.manpower}, needs {manpower_cost}.\n"
+                        f"Use `... {amount} free` to bypass."
+                    )
+
+                # Deduct
+                house.treasury -= gold_cost
+                house.manpower -= manpower_cost
+                cost_msg = f"(Cost: {gold_cost} Gold, {manpower_cost} Manpower)"
+
+            # 5. Find or Create Army
+            army_type = "SEA" if unit_type == "ships" else "LAND"
+            stmt_army = select(Army).where(
+                Army.house_id == house.house_id,
+                Army.location_x == fief.location_x,
+                Army.location_y == fief.location_y,
+                Army.status.in_(["GARRISONED", "DOCKED", "IDLE"]),
+                Army.army_type == army_type,
+            )
+            garrison = (await session.execute(stmt_army)).scalars().first()
+
+            if not garrison:
+                garrison_status = "DOCKED" if army_type == "SEA" else "GARRISONED"
+                garrison_name = (
+                    f"Fleet of {fief.name}"
+                    if army_type == "SEA"
+                    else f"Garrison of {fief.name}"
+                )
+
+                garrison = Army(
+                    game_id=game.game_id,
+                    house_id=house.house_id,
+                    commander_name=garrison_name,
+                    troop_count=0,
+                    composition={},
+                    location_x=fief.location_x,
+                    location_y=fief.location_y,
+                    status=garrison_status,
+                    army_type=army_type,
+                )
+                session.add(garrison)
+                await session.flush()
+
+            # 6. Add Units
+            garrison.troop_count += amount
+            garrison.composition[unit_type] = (
+                garrison.composition.get(unit_type, 0) + amount
+            )
+            flag_modified(garrison, "composition")
+
+            await session.commit()
+
+            embed = discord.Embed(
+                title="✅ GM Recruitment",
+                description=f"Recruited **{amount} {unit_type}** for **{house.name}** at **{fief.name}**.\n{cost_msg}",
+                color=discord.Color.green(),
+            )
+            embed.set_footer(
+                text=f"House Treasury: {house.treasury} | Manpower: {house.manpower}"
+            )
             await ctx.send(embed=embed)
 
 
