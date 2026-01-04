@@ -1,0 +1,100 @@
+{
+  "Beyond the Wall": [
+    {
+      "house": "Crowkiller",
+      "castle": "Crowkiller's Ridge",
+      "x": 710,
+      "y": 310
+    },
+    {
+      "house": "Cave Dwellers (Deep)",
+      "castle": "Deep Caverns",
+      "x": 660,
+      "y": 270
+    },
+    {
+      "house": "Dogshead",
+      "castle": "Dogshead Camp",
+      "x": 690,
+      "y": 360
+    },
+    {
+      "house": "Frozen Shore Clans",
+      "castle": "Frozen Shore",
+      "x": 480,
+      "y": 300
+    },
+    {
+      "house": "Cave Dwellers",
+      "castle": "Great Cavern",
+      "x": 670,
+      "y": 290
+    },
+    {
+      "house": "Other Clans",
+      "castle": "Haunted Forest",
+      "x": 780,
+      "y": 340
+    },
+    {
+      "house": "Hornfoots",
+      "castle": "Hornfoot Territory",
+      "x": 620,
+      "y": 340
+    },
+    {
+      "house": "Ice River Clans",
+      "castle": "Ice River",
+      "x": 580,
+      "y": 320
+    },
+    {
+      "house": "Giants",
+      "castle": "Land of Always Winter",
+      "x": 350,
+      "y": 150
+    },
+    {
+      "house": "Rattleshirt",
+      "castle": "Lord of Bones' Camp",
+      "x": 700,
+      "y": 340
+    },
+    {
+      "house": "Rayder",
+      "castle": "Mance's Camp",
+      "x": 680,
+      "y": 330
+    },
+    {
+      "house": "Nightrunners",
+      "castle": "Nightrunners Camp",
+      "x": 790,
+      "y": 400
+    },
+    {
+      "house": "Storrold's Point Clans",
+      "castle": "Storrold's Point",
+      "x": 920,
+      "y": 270
+    },
+    {
+      "house": "Thenn",
+      "castle": "Thenn Highlands",
+      "x": 600,
+      "y": 200
+    },
+    {
+      "house": "Thenns",
+      "castle": "Thenn Valley",
+      "x": 600,
+      "y": 220
+    },
+    {
+      "house": "Giantsbane",
+      "castle": "Tormund's Hall",
+      "x": 720,
+      "y": 350
+    }
+  ]
+}

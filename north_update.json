@@ -1,148 +1,94 @@
-[
+{
+  "The North": [
     {
-        "house": "Bolton",
-        "castle": "The Dreadfort",
-        "update": {
-            "base_income": 2400,
-            "note": "Buffed to reflect status as primary Stark rival."
-        }
+      "house": "Slate",
+      "castle": "Blackpool",
+      "x": 605,
+      "y": 1080
     },
     {
-        "house": "Karstark",
-        "castle": "Karhold",
-        "update": {
-            "base_income": 1300
-        }
+      "house": "Bole",
+      "castle": "Bole",
+      "x": 470,
+      "y": 650
     },
     {
-        "house": "Umber",
-        "castle": "Last Hearth",
-        "update": {
-            "base_income": 1000
-        }
+      "house": "Branch",
+      "castle": "Branch",
+      "x": 485,
+      "y": 665
     },
     {
-        "house": "Stark",
-        "castle": "Moat Cailin",
-        "update": {
-            "base_income": 200,
-            "army_stats": {
-                "infantry": 100,
-                "cavalry": 0,
-                "archers": 400,
-                "ships": 0
-            },
-            "note": "Strategic choke point. High archer defense."
-        }
+      "house": "Burley",
+      "castle": "Burley",
+      "x": 585,
+      "y": 890
     },
     {
-        "house": "The North",
-        "castle": "Ramsgate",
-        "update": {
-            "base_income": 400,
-            "army_stats": {
-                "infantry": 100,
-                "cavalry": 0,
-                "archers": 50,
-                "ships": 10
-            },
-            "note": "Minor port on the Narrow Sea."
-        }
+      "house": "Cassel",
+      "castle": "Cassel",
+      "x": 605,
+      "y": 780
     },
     {
-        "house": "Ashwood",
-        "update": {
-            "x": 595, "y": 1130, "note": "Crannogman (Neck)"
-        }
+      "house": "Condon",
+      "castle": "Condon",
+      "x": 610,
+      "y": 800
     },
     {
-        "house": "Blackmyre",
-        "update": {
-            "x": 580, "y": 1140, "note": "Crannogman (Neck)"
-        }
+      "house": "Harclay",
+      "castle": "Harclay",
+      "x": 575,
+      "y": 935
     },
     {
-        "house": "Cray",
-        "update": {
-            "x": 600, "y": 1160, "note": "Crannogman (Neck)"
-        }
+      "house": "Forrester",
+      "castle": "Ironrath",
+      "x": 500,
+      "y": 645
     },
     {
-        "house": "Fenn",
-        "update": {
-            "x": 570, "y": 1120, "note": "Crannogman (Neck)"
-        }
+      "house": "Knott",
+      "castle": "Knott",
+      "x": 605,
+      "y": 905
     },
     {
-        "house": "Greengood",
-        "update": {
-            "x": 590, "y": 1150, "note": "Crannogman (Neck)"
-        }
+      "house": "Liddle",
+      "castle": "Liddle",
+      "x": 565,
+      "y": 915
     },
     {
-        "house": "Peat",
-        "update": {
-            "x": 575, "y": 1155, "note": "Crannogman (Neck)"
-        }
+      "house": "Norry",
+      "castle": "Norry",
+      "x": 595,
+      "y": 865
     },
     {
-        "house": "Quagg",
-        "update": {
-            "x": 585, "y": 1125, "note": "Crannogman (Neck)"
-        }
+      "house": "Tuttle",
+      "castle": "Tuttle Farm",
+      "x": 515,
+      "y": 655
     },
     {
-        "house": "Ironsmith",
-        "update": {
-            "x": 850, "y": 800, "base_income": 300, "note": "Placed near Weeping Water"
-        }
+      "house": "Woods",
+      "castle": "Woods",
+      "x": 475,
+      "y": 680
     },
     {
-        "house": "Holt",
-        "update": {
-            "x": 650, "y": 700, "base_income": 300, "note": "Wolfswood area"
-        }
+      "house": "Wull",
+      "castle": "Wull",
+      "x": 575,
+      "y": 885
     },
     {
-        "house": "Long",
-        "update": {
-            "x": 680, "y": 680, "base_income": 300, "note": "Wolfswood area"
-        }
-    },
-    {
-        "house": "Mollen",
-        "update": {
-            "x": 620, "y": 760, "base_income": 250, "note": "Near Winterfell"
-        }
-    },
-    {
-        "house": "Waterman",
-        "update": {
-            "x": 750, "y": 750, "base_income": 300, "note": "Near Hornwood"
-        }
-    },
-    {
-        "house": "Woolfield",
-        "update": {
-            "x": 720, "y": 950, "base_income": 400, "note": "Near White Harbor"
-        }
-    },
-    {
-        "house": "Lake",
-        "update": {
-            "x": 730, "y": 900
-        }
-    },
-    {
-        "house": "Lightfoot",
-        "update": {
-            "x": 550, "y": 850
-        }
-    },
-    {
-        "house": "Marsh",
-        "update": {
-            "x": 650, "y": 1100, "note": "Edge of the Neck"
-        }
+      "house": "Flint of the Mountains",
+      "castle": "in the Northern mountains",
+      "x": 555,
+      "y": 855
     }
-]
+  ]
+}
