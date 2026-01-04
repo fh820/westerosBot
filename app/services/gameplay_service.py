@@ -110,37 +110,55 @@ class GameplayService:
         self, game_id: int, discord_id: int, input_string: str
     ):
         """
-        Smart Validation:
-        1. Checks for exact House match ("Stark")
-        2. Checks for Parent House match ("Sansa Stark" -> Parent "Stark")
+        Smart Validation (Updated for multi-word house names):
+        1. Checks for an exact House name match.
+        2. If not, finds the best "Parent House" match from all available houses.
         """
         claim_type = "House"
+        house = None
 
-        # A. Try Finding Exact House
-        stmt = select(House).where(
+        # A. Try Finding Exact House Match (e.g., !claim "Targaryen of King's Landing")
+        stmt_exact = select(House).where(
             House.game_id == game_id, House.name.ilike(input_string)
         )
-        result = await self.session.execute(stmt)
-        house = result.scalars().first()
+        house = (await self.session.execute(stmt_exact)).scalars().first()
 
         # B. If not found, Try Finding Parent House (Character Claim logic)
         if not house:
-            parts = input_string.split(" ")
-            if len(parts) > 1:
-                parent_name = parts[-1]  # Assumption: Last word is House (e.g. "Stark")
+            claim_type = "Character"
+
+            # --- NEW LOGIC: Smarter Parent House Finder ---
+            # 1. Get all possible house names in the game
+            stmt_all_houses = select(House.name).where(House.game_id == game_id)
+            all_house_names = (
+                (await self.session.execute(stmt_all_houses)).scalars().all()
+            )
+
+            # 2. Sort by length (longest first) to find the most specific match
+            # e.g., "Targaryen of King's Landing" will be checked before "Targaryen"
+            all_house_names.sort(key=len, reverse=True)
+
+            # 3. Find the first house name that is a suffix of the user's input
+            parent_house_name = None
+            for name in all_house_names:
+                if input_string.lower().endswith(name.lower()):
+                    parent_house_name = name
+                    break  # Found the best match
+
+            # 4. If a parent was found, load that house object
+            if parent_house_name:
+                # We can reuse the 'house' variable here
                 stmt_parent = select(House).where(
-                    House.game_id == game_id, House.name.ilike(parent_name)
+                    House.game_id == game_id, House.name.ilike(parent_house_name)
                 )
-                res_parent = await self.session.execute(stmt_parent)
-                house = res_parent.scalars().first()
-                if house:
-                    claim_type = "Character"
+                house = (await self.session.execute(stmt_parent)).scalars().first()
+            # --- END NEW LOGIC ---
 
         # C. If still nothing, Fail
         if not house:
             return (
                 False,
-                f"❌ Could not find House or Parent House for **{input_string}**.",
+                f"❌ Could not find a matching House or Parent House for **'{input_string}'**.",
                 None,
             )
 
@@ -157,14 +175,27 @@ class GameplayService:
                     f"❌ House **{house.name}** is already ruled by another player.",
                     None,
                 )
-        else:
-            # Character Claim: Check if this specific character Faction already exists
-            char_name = " ".join(input_string.split(" ")[:-1])
+        else:  # Character Claim
+            # The character's name is the part of the string BEFORE the house name.
+            # Example: "Aerys II Targaryen of King's Landing" -> "Aerys II"
+            char_name = input_string[: -len(house.name)].strip()
+            if not char_name:
+                return (
+                    False,
+                    "❌ Invalid claim. Must provide a character name before the house name (e.g., 'Rhaegar Targaryen of Dragonstone').",
+                    None,
+                )
+
+            # Check if a faction with this character's name already exists
             stmt_fac = select(House).where(
                 House.game_id == game_id, House.name.ilike(char_name)
             )
             if (await self.session.execute(stmt_fac)).scalars().first():
-                return False, f"❌ **{char_name}** is already played.", None
+                return (
+                    False,
+                    f"❌ A house/faction named **{char_name}** already exists or is played.",
+                    None,
+                )
 
         # E. Check User Status (One Role Per Game)
         stmt_user = select(User).where(User.discord_id == discord_id)
@@ -303,366 +334,6 @@ class GameplayService:
             faction,
             parent_house,
         )
-
-    # async def get_player_dashboard(self, game_id: int, discord_id: int):
-    #     """
-    #     Fetches dashboard data.
-    #     For regular players, it fetches their own house data.
-    #     For GMs, it fetches a list of dashboards for all houses in the game.
-    #     """
-    #     # 0. Get the User object to check if they are a GM
-    #     user_stmt = select(User).where(User.discord_id == discord_id)
-    #     user = (await self.session.execute(user_stmt)).scalars().first()
-
-    #     if not user:
-    #         return None, "❌ User not found."
-
-    #     # 1. Build a fast, in-memory "phonebook" to look up fief names from coordinates.
-    #     all_fiefs_result = await self.session.execute(
-    #         select(Fief).where(Fief.game_id == game_id)
-    #     )
-    #     game_fief_map = {
-    #         (int(f.location_x), int(f.location_y)): f.name
-    #         for f in all_fiefs_result.scalars().all()
-    #     }
-
-    #     # Helper function to generate a single house's dashboard data
-    #     async def _generate_house_dashboard(
-    #         target_house: House, is_player_claimed: bool = False
-    #     ):
-    #         # Re-fetch the house with its relations loaded, just in case `target_house`
-    #         # came from a different query that didn't load them.
-    #         loaded_house_stmt = (
-    #             select(House)
-    #             .where(House.house_id == target_house.house_id)
-    #             .options(
-    #                 selectinload(House.fiefs),
-    #                 selectinload(House.armies),
-    #                 selectinload(House.dynasty),
-    #             )
-    #         )
-    #         loaded_house = (
-    #             (await self.session.execute(loaded_house_stmt)).scalars().first()
-    #         )
-
-    #         if not loaded_house:
-    #             return None  # Should not happen if target_house was valid
-
-    #         house_char: Character | None = None
-    #         if is_player_claimed:
-    #             # If claimed by player, try to find the specific character linked to the primary player
-    #             player_for_house = await self.session.scalar(
-    #                 select(GamePlayer)
-    #                 .where(
-    #                     GamePlayer.game_id == game_id,
-    #                     GamePlayer.claimed_house_id == loaded_house.house_id,
-    #                     GamePlayer.is_primary == True,
-    #                 )
-    #                 .options(selectinload(GamePlayer.character))
-    #             )
-    #             if player_for_house:
-    #                 house_char = player_for_house.character
-
-    #         # If not player-claimed or player character not found, default to head character if available
-    #         if not house_char:
-    #             house_char_stmt = select(Character).where(
-    #                 Character.house_id == loaded_house.house_id,
-    #                 Character.is_head == True,
-    #             )
-    #             house_char = (
-    #                 (await self.session.execute(house_char_stmt)).scalars().first()
-    #             )
-
-    #         total_income = sum(
-    #             f.base_income * f.integration for f in loaded_house.fiefs
-    #         )
-    #         total_troops = sum(a.troop_count for a in loaded_house.armies)
-
-    #         armies_data = []
-    #         for army in loaded_house.armies:
-    #             curr_key = (int(army.location_x), int(army.location_y))
-    #             loc_name = game_fief_map.get(curr_key, f"{curr_key[0]}, {curr_key[1]}")
-
-    #             destination_name = None
-    #             if (
-    #                 army.status in ["MARCHING", "SAILING"]
-    #                 and army.destination_x is not None
-    #             ):
-    #                 dest_key = (int(army.destination_x), int(army.destination_y))
-    #                 destination_name = game_fief_map.get(
-    #                     dest_key, f"{dest_key[0]}, {dest_key[1]}"
-    #                 )
-
-    #             cargo_count = 0
-    #             if army.cargo:
-    #                 if isinstance(army.cargo, dict):
-    #                     cargo_count = army.cargo.get("troop_count", 0)
-    #                 elif isinstance(army.cargo, str):
-    #                     try:
-    #                         loaded = json.loads(army.cargo)
-    #                         cargo_count = loaded.get("troop_count", 0)
-    #                     except:
-    #                         pass
-
-    #             armies_data.append(
-    #                 {
-    #                     "id": army.army_id,
-    #                     "name": army.commander_name,
-    #                     "type": army.army_type,
-    #                     "count": army.troop_count,
-    #                     "comp": army.composition,
-    #                     "location": loc_name,
-    #                     "status": army.status,
-    #                     "destination": destination_name,
-    #                     "cargo_count": cargo_count,
-    #                 }
-    #             )
-
-    #         is_scion = loaded_house.house_type == "faction"
-    #         parent_name = (
-    #             loaded_house.dynasty.name if is_scion and loaded_house.dynasty else None
-    #         )
-
-    #         return {
-    #             "name": (
-    #                 house_char.name if house_char else loaded_house.name
-    #             ),  # Character name if available, else house name
-    #             "house_id": loaded_house.house_id,  # Added for GM context
-    #             "house_name": loaded_house.name,
-    #             "parent_house": parent_name,
-    #             "color": loaded_house.color_hex,
-    #             "treasury": loaded_house.treasury,
-    #             "income": total_income,
-    #             "fiefs": [f.name for f in loaded_house.fiefs],
-    #             "total_troops": total_troops,
-    #             "armies": armies_data,
-    #             "skills": house_char.skills if house_char else {},
-    #             "is_primary_player_house": is_player_claimed,  # New flag
-    #             "manpower": loaded_house.manpower,
-    #             "manpower_cap": loaded_house.manpower_cap,
-    #         }
-
-    #     # --- GM DASHBOARD LOGIC ---
-    #     if user.is_gm:  # Assuming User.is_gm field exists
-    #         all_houses_in_game_stmt = (
-    #             select(House)
-    #             .where(House.game_id == game_id)
-    #             .options(
-    #                 selectinload(House.fiefs),
-    #                 selectinload(House.armies),
-    #                 selectinload(House.dynasty),
-    #             )
-    #         )
-    #         all_houses = (
-    #             (await self.session.execute(all_houses_in_game_stmt)).scalars().all()
-    #         )
-
-    #         all_player_claimed_house_ids = set()
-    #         player_stmt = select(GamePlayer.claimed_house_id).where(
-    #             GamePlayer.game_id == game_id, GamePlayer.is_primary == True
-    #         )
-    #         player_results = await self.session.execute(player_stmt)
-    #         all_player_claimed_house_ids.update(player_results.scalars().all())
-
-    #         gm_dashboards = []
-    #         for house in all_houses:
-    #             is_claimed = house.house_id in all_player_claimed_house_ids
-    #             dashboard_data = await _generate_house_dashboard(
-    #                 house, is_player_claimed=is_claimed
-    #             )
-    #             if dashboard_data:
-    #                 gm_dashboards.append(dashboard_data)
-
-    #         # Return a list of dashboards for the GM
-    #         return gm_dashboards, None
-
-    #     # --- REGULAR PLAYER DASHBOARD LOGIC (Original logic) ---
-    #     else:
-    #         player_stmt = (
-    #             select(GamePlayer)
-    #             .where(
-    #                 GamePlayer.game_id == game_id,
-    #                 GamePlayer.user_id == user.user_id,
-    #             )
-    #             .options(
-    #                 selectinload(GamePlayer.house).selectinload(House.fiefs),
-    #                 selectinload(GamePlayer.house).selectinload(House.armies),
-    #                 selectinload(GamePlayer.character),
-    #                 selectinload(GamePlayer.house).selectinload(House.dynasty),
-    #             )
-    #         )
-    #         player = (await self.session.execute(player_stmt)).scalars().first()
-
-    #         if not player or not player.house:
-    #             return None, "❌ You have not claimed a role yet."
-
-    #         # Use the helper function for consistency
-    #         dashboard_data = await _generate_house_dashboard(
-    #             player.house, is_player_claimed=True
-    #         )
-    #         if dashboard_data:
-    #             # Add player-specific info if needed, e.g., if player has multiple characters
-    #             # For now, player.is_primary is already handled by _generate_house_dashboard's is_player_claimed
-    #             return dashboard_data, None
-    #         else:
-    #             return None, "❌ Could not generate dashboard for your house."
-
-    # async def get_house_dashboard(self, game_id: int, house_name: str):
-    #     """
-    #     Fetches the detailed dashboard for a single house, specified by name.
-    #     Intended for GM use.
-    #     """
-    #     # 1. Find the house by name
-    #     stmt = select(House).where(
-    #         House.game_id == game_id, House.name.ilike(house_name)
-    #     )
-    #     house = (await self.session.execute(stmt)).scalars().first()
-
-    #     if not house:
-    #         return None, f"❌ House '{house_name}' not found in this game."
-
-    #     # 2. Check if the house is claimed by a player
-    #     player_stmt = select(GamePlayer.claimed_house_id).where(
-    #         GamePlayer.game_id == game_id,
-    #         GamePlayer.claimed_house_id == house.house_id,
-    #         GamePlayer.is_primary == True,
-    #     )
-    #     is_claimed = (
-    #         await self.session.execute(player_stmt)
-    #     ).scalars().first() is not None
-
-    #     # 3. Generate and return the dashboard using the existing helper
-    #     # We need the full game_fief_map for this to work, so we build it here.
-    #     all_fiefs_result = await self.session.execute(
-    #         select(Fief).where(Fief.game_id == game_id)
-    #     )
-    #     game_fief_map = {
-    #         (int(f.location_x), int(f.location_y)): f.name
-    #         for f in all_fiefs_result.scalars().all()
-    #     }
-
-    #     # The _generate_house_dashboard helper needs to be defined within this class
-    #     # (It was previously nested inside get_player_dashboard, so we should make it a proper method)
-    #     # We will assume you've moved _generate_house_dashboard to be a method of GameplayService
-
-    #     # Let's redefine the helper here for clarity and self-containment of this example.
-    #     # In your actual code, you should make _generate_house_dashboard a method of the class.
-    #     async def _generate_house_dashboard(
-    #         target_house: House, is_player_claimed: bool = False
-    #     ):
-    #         # This is the same helper function as before
-    #         loaded_house_stmt = (
-    #             select(House)
-    #             .where(House.house_id == target_house.house_id)
-    #             .options(
-    #                 selectinload(House.fiefs),
-    #                 selectinload(House.armies),
-    #                 selectinload(House.dynasty),
-    #             )
-    #         )
-    #         loaded_house = (
-    #             (await self.session.execute(loaded_house_stmt)).scalars().first()
-    #         )
-
-    #         if not loaded_house:
-    #             return None
-
-    #         house_char: Character | None = None
-    #         if is_player_claimed:
-    #             player_for_house = await self.session.scalar(
-    #                 select(GamePlayer)
-    #                 .where(
-    #                     GamePlayer.game_id == game_id,
-    #                     GamePlayer.claimed_house_id == loaded_house.house_id,
-    #                     GamePlayer.is_primary == True,
-    #                 )
-    #                 .options(selectinload(GamePlayer.character))
-    #             )
-    #             if player_for_house:
-    #                 house_char = player_for_house.character
-    #         else:
-    #             house_char_stmt = select(Character).where(
-    #                 Character.house_id == loaded_house.house_id,
-    #                 Character.is_head == True,
-    #             )
-    #             house_char = (
-    #                 (await self.session.execute(house_char_stmt)).scalars().first()
-    #             )
-
-    #         total_income = sum(
-    #             f.base_income * f.integration for f in loaded_house.fiefs
-    #         )
-    #         total_troops = sum(a.troop_count for a in loaded_house.armies)
-
-    #         armies_data = []
-    #         for army in loaded_house.armies:
-    #             curr_key = (int(army.location_x), int(army.location_y))
-    #             loc_name = game_fief_map.get(curr_key, f"{curr_key[0]}, {curr_key[1]}")
-
-    #             destination_name = None
-    #             if (
-    #                 army.status in ["MARCHING", "SAILING"]
-    #                 and army.destination_x is not None
-    #             ):
-    #                 dest_key = (int(army.destination_x), int(army.destination_y))
-    #                 destination_name = game_fief_map.get(
-    #                     dest_key, f"{dest_key[0]}, {dest_key[1]}"
-    #                 )
-
-    #             cargo_count = 0
-    #             if army.cargo:
-    #                 if isinstance(army.cargo, dict):
-    #                     cargo_count = army.cargo.get("troop_count", 0)
-    #                 elif isinstance(army.cargo, str):
-    #                     try:
-    #                         loaded = json.loads(army.cargo)
-    #                         cargo_count = loaded.get("troop_count", 0)
-    #                     except:
-    #                         pass
-
-    #             armies_data.append(
-    #                 {
-    #                     "id": army.army_id,
-    #                     "name": army.commander_name,
-    #                     "type": army.army_type,
-    #                     "count": army.troop_count,
-    #                     "comp": army.composition,
-    #                     "location": loc_name,
-    #                     "status": army.status,
-    #                     "destination": destination_name,
-    #                     "cargo_count": cargo_count,
-    #                 }
-    #             )
-
-    #         is_scion = loaded_house.house_type == "faction"
-    #         parent_name = (
-    #             loaded_house.dynasty.name if is_scion and loaded_house.dynasty else None
-    #         )
-
-    #         return {
-    #             "name": (house_char.name if house_char else loaded_house.name),
-    #             "house_id": loaded_house.house_id,
-    #             "house_name": loaded_house.name,
-    #             "parent_house": parent_name,
-    #             "color": loaded_house.color_hex,
-    #             "treasury": loaded_house.treasury,
-    #             "income": total_income,
-    #             "fiefs": [f.name for f in loaded_house.fiefs],
-    #             "total_troops": total_troops,
-    #             "armies": armies_data,
-    #             "skills": house_char.skills if house_char else {},
-    #             "is_primary_player_house": is_claimed,
-    #             "manpower": loaded_house.manpower,
-    #             "manpower_cap": loaded_house.manpower_cap,
-    #         }
-
-    #     dashboard_data = await _generate_house_dashboard(
-    #         house, is_player_claimed=is_claimed
-    #     )
-
-    #     return dashboard_data, None
-
-    # In your GameplayService class...
 
     async def get_player_dashboard(self, game_id: int, discord_id: int):
         """

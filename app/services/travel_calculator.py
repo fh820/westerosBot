@@ -83,3 +83,22 @@ def calculate_travel_duration(
     total_real_seconds = total_game_days * REAL_SECONDS_PER_GAME_DAY
 
     return int(total_real_seconds)
+
+
+def format_duration(seconds):
+    """Helper to make it readable for Discord"""
+    days = seconds // 86400
+    seconds %= 86400
+    hours = seconds // 3600
+    seconds %= 3600
+    minutes = seconds // 60
+
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+
+    return " ".join(parts) if parts else "< 1m"

@@ -225,7 +225,23 @@ class WarfareCog(commands.Cog):
             elif data["type"] == "GATE_ALERT":
                 await self.handle_gate_alert(data)
             elif data["type"] == "GATE_RESPONSE":
-                handle_gate_response.delay(data["army_id"], data["action"])
+                if data.get("action") == "GRANT":
+                    # We are now in an async context, so we can call the async service directly.
+                    async with get_session() as session:
+                        service = WarfareService(session)
+                        success, response, fog_msg = (
+                            await service.resume_march_from_gate(data["army_id"])
+                        )
+
+                        # Optional: Notify the GM or players that the march has resumed
+                        if success:
+                            print(
+                                f"✅ March resumed for Army {data['army_id']}. New ETA: {response['time']}"
+                            )
+                        else:
+                            print(
+                                f"❌ Failed to resume march for Army {data['army_id']}: {response}"
+                            )
             elif data["type"] == "PASSAGE_DENIED":
                 await self.handle_passage_denied(data)
             elif data["type"] == "PROMPT_INTERACTION":

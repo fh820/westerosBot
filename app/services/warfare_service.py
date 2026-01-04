@@ -96,13 +96,16 @@ class WarfareService:
     async def resume_march_from_gate(self, army_id: int):
         """
         Called when a gate owner allows an army to pass.
-        Triggers a fresh move calculation to catch ANY SUBSEQUENT GATES.
+        Triggers a fresh move calculation, which will catch any subsequent gates.
         """
         army = await self.session.get(Army, army_id)
         if not army:
-            return False, "Army not found."
+            return False, "❌ Army not found."
 
-        # Check if we have a saved destination
+        if army.status != "IDLE":
+            return False, "❌ Army is not currently halted at a gate."
+
+        # Check if we have a saved destination from the gate alert
         if army.original_destination_x is None or army.original_destination_y is None:
             return (
                 False,
@@ -112,22 +115,31 @@ class WarfareService:
         dest_x = army.original_destination_x
         dest_y = army.original_destination_y
 
-        # Clear the saved destination so we don't get stuck in a loop if they stop again
-        army.original_destination_x = None
-        army.original_destination_y = None
-
-        # --- CRITICAL: CALL MOVE_ARMY AGAIN ---
-        # This recalculates the path from the current gate to the target.
-        # The _check_gate_interception logic will run on this NEW path.
-        # It will skip the current gate (i < 10) and find the NEXT gate (Moat Cailin).
-        return await self.move_army(
-            game_id=army.game_id,
-            user_id=None,  # System action, no user auth needed if called internally
-            army_id=army.army_id,
-            target_x=dest_x,
-            target_y=dest_y,
-            is_gm_override=True,  # Bypass ownership checks since this is a system resume
+        # Get the name of the final destination for the march_army call
+        dest_name = await self.get_location_name_from_coords(
+            army.game_id, dest_x, dest_y
         )
+        if not dest_name:
+            return False, "❌ Could not resolve the original destination's name."
+
+        # --- THE CRITICAL FIX ---
+        # Instead of reinventing the logic, we call the main march function again.
+        # It will handle pathfinding, splitting ("all" units), and most importantly,
+        # it will run _check_gate_interception on the NEW path.
+        # The service returns a tuple of 3 items on success
+        success, response_data, fog_msg = await self.march_army(
+            game_id=army.game_id,
+            user_id=None,  # System action
+            identifier=str(army.army_id),
+            dest_name=dest_name,
+            units_input="all",  # Move the whole army
+            commander=army.commander_name,
+            gold_to_carry=0,  # Gold is already in the army's treasury
+            is_gm_override=True,
+            acting_house_id=army.house_id,
+        )
+        # We need to return the same tuple structure
+        return success, response_data, fog_msg
 
     async def _check_gate_interception(
         self, game_id: int, marcher_house_id: int, path_points: list

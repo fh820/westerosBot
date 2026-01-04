@@ -398,12 +398,18 @@ class AdminCog(commands.Cog):
 
     @commands.command()
     @commands.has_permissions(administrator=True)
-    async def set_head(self, ctx, target: discord.Member, house_name: str):
+    async def set_head(self, ctx, target: discord.Member, *, house_name: str):
+        """
+        Assigns a player as the head of a house.
+        Correctly handles multi-word house names.
+        Usage: !set_head @Player Targaryen of King's Landing
+        """
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return
 
+            # Now, `house_name` will be the full string "Targaryen of King's Landing"
             stmt_h = select(House).where(
                 House.name.ilike(house_name), House.game_id == game.game_id
             )
@@ -412,7 +418,6 @@ class AdminCog(commands.Cog):
                 await ctx.send(f"❌ House **{house_name}** not found.")
                 return
 
-            # ADDED: .options(selectinload(GamePlayer.character))
             stmt_p = (
                 select(GamePlayer)
                 .join(User)
@@ -440,7 +445,7 @@ class AdminCog(commands.Cog):
             player.claimed_house_id = house.house_id
             player.is_primary = True
 
-            # ADDED: CHARACTER-HOUSE SYNC
+            # Sync Character to the new house
             if player.character:
                 player.character.house_id = house.house_id
                 player.character.is_head = True
