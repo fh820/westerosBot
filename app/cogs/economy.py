@@ -730,7 +730,9 @@ class EconomyCog(commands.Cog):
             "`!gm_econ set_tax [House] [Percent]` - Set house contribution\n"
             "`!gm_econ set_vassal_tax [Liege] [Percent]` - Set all vassals of a liege\n"
             "`!gm_econ buy/sell` - Force unit management\n"
-            "`!gm_econ stop_tax [House]` - Toggle tax status"
+            "`!gm_econ stop_tax [House]` - Toggle tax statu\ns"
+            "`!gm_econ set_income [type] [target] [value]`\n"
+            "`!gm_econ list_income`\n"
         )
 
     @gm_econ.command(name="check")
@@ -1026,6 +1028,96 @@ class EconomyCog(commands.Cog):
             ]
             embed.description = "\n".join(report_lines)
             embed.set_footer(text=f"Total Expected: {total_tax} Gold")
+            await ctx.send(embed=embed)
+
+    @gm_econ.command(name="set_income")
+    async def gm_set_income(
+        self, ctx, mod_type: str, target: str, *, value: str = None
+    ):
+        """
+        Sets an income modifier for the next !year_end.
+
+        Usage:
+        !gm_eco set_income global half
+        !gm_eco set_income region "The North" 50%
+        !gm_eco set_income house "Stark" 0%
+        !gm_eco set_income region "The North" reset
+        """
+        mod_type = mod_type.lower()
+
+        # --- FIX: Handle the 'global' case ---
+        # If the type is global, the user likely typed `!gm_eco set_income global half`
+        # In this case, the `target` variable will contain "half", and `value` will be None.
+        if mod_type == "global":
+            if value is None:
+                value = target  # Re-assign the value correctly
+                target = "global"  # The service expects a placeholder target
+
+        # For other types, a value is mandatory.
+        elif value is None:
+            await ctx.send(
+                "❌ **Missing Value:** You must provide a value (e.g., 'half', '50%', 'reset').\n`!gm_eco set_income region \"The North\" 50%`"
+            )
+            return
+        # ------------------------------------
+
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return
+
+            service = EconomyService(session)
+            success, msg = await service.set_income_modifier(
+                game.game_id, mod_type, target, value.lower()
+            )
+
+            color = discord.Color.green() if success else discord.Color.red()
+            await ctx.send(embed=discord.Embed(description=msg, color=color))
+
+    @gm_econ.command(name="list_income")
+    async def gm_list_income(self, ctx):
+        """Shows all active income modifiers."""
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return
+
+            mods = game.income_modifiers or {}
+            embed = discord.Embed(
+                title="Active Income Modifiers", color=discord.Color.blue()
+            )
+
+            embed.add_field(
+                name="Global",
+                value=f"{mods.get('global', 1.0) * 100:.0f}%",
+                inline=False,
+            )
+
+            region_str = (
+                "\n".join(
+                    [f"- {r}: {v*100:.0f}%" for r, v in mods.get("regions", {}).items()]
+                )
+                or "None"
+            )
+            embed.add_field(name="Regions", value=region_str, inline=False)
+
+            house_mods = mods.get("houses", {})
+            if house_mods:
+                house_ids = [int(h_id) for h_id in house_mods.keys()]
+                stmt = select(House.house_id, House.name).where(
+                    House.house_id.in_(house_ids)
+                )
+                house_map = {h.house_id: h.name for h in await session.execute(stmt)}
+                house_str = "\n".join(
+                    [
+                        f"- {house_map.get(int(h_id), h_id)}: {v*100:.0f}%"
+                        for h_id, v in house_mods.items()
+                    ]
+                )
+            else:
+                house_str = "None"
+
+            embed.add_field(name="Specific Houses", value=house_str, inline=False)
             await ctx.send(embed=embed)
 
 

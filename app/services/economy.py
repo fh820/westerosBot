@@ -1,6 +1,6 @@
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
-from app.db.models import House, Fief, Army, GamePlayer, User, Character
+from app.db.models import House, Fief, Army, GamePlayer, User, Character, Game
 from sqlalchemy.orm.attributes import flag_modified
 import datetime
 
@@ -67,9 +67,18 @@ class EconomyService:
 
     async def run_fiscal_year(self, game_id: int) -> list[str]:
         """
-        Debug Version: detect_cycles_before_running
+        Calculates fiscal year, applying income modifiers and checking for feudal loops.
         """
-        # 1. Load Data
+        # 1. Load Data (Game, Houses, Players)
+        game = await self.session.get(Game, game_id)
+        if not game:
+            return ["❌ Game not found."]
+
+        income_mods = game.income_modifiers or {}
+        mod_global = income_mods.get("global", 1.0)
+        mod_regions = income_mods.get("regions", {})
+        mod_houses = income_mods.get("houses", {})
+
         stmt_houses = (
             select(House)
             .where(House.game_id == game_id)
@@ -79,52 +88,35 @@ class EconomyService:
         house_map = {h.house_id: h for h in houses}
 
         # =========================================================
-        # 🕵️ DEBUG: PRE-FLIGHT CYCLE DETECTION
+        # 🕵️ PRE-FLIGHT CYCLE DETECTION (Kept from Debug Version)
         # =========================================================
         detected_cycles = []
-
-        # We check the chain for every house to ensure no infinite loops exist
         for h in houses:
-            current_chain_ids = set()
-            path_names = []
-
+            current_chain_ids, path_names = set(), []
             curr = h
-            # Traverse up the tree
             while curr.liege_id and curr.liege_id in house_map:
-                # 1. Check if we have been here before in this specific chain
                 if curr.house_id in current_chain_ids:
-                    # CYCLE FOUND!
                     path_names.append(f"**{curr.name}** (ID {curr.house_id}) 🔄")
                     detected_cycles.append(" -> ".join(path_names))
                     break
-
-                # 2. Add to history and move up
                 current_chain_ids.add(curr.house_id)
                 path_names.append(f"{curr.name} ({curr.house_id})")
-
-                # Move to the liege
                 curr = house_map[curr.liege_id]
-
-                # 3. Check for immediate self-reference (House is its own Liege)
                 if curr.house_id in current_chain_ids:
                     path_names.append(f"**{curr.name}** (ID {curr.house_id}) 🔄")
                     detected_cycles.append(" -> ".join(path_names))
                     break
-
         if detected_cycles:
-            # Remove duplicates (since A->B is the same loop as B->A)
             unique_cycles = list(set(detected_cycles))
-            error_msg = "❌ **CRITICAL DATA ERROR: FEUDAL LOOPS DETECTED**\nThe fiscal year cannot run because the following houses are stuck in infinite loops:\n\n"
-            for cycle in unique_cycles[:10]:  # Limit to 10 to prevent spam
+            error_msg = "❌ **CRITICAL DATA ERROR: FEUDAL LOOPS DETECTED**\n..."
+            for cycle in unique_cycles[:10]:
                 error_msg += f"🔸 {cycle}\n"
-
-            error_msg += "\n**Solution:** Use SQL to set one of these houses' `liege_id` to NULL or a valid King."
+            error_msg += (
+                "\n**Solution:** Use SQL to fix the `liege_id` of one of these houses."
+            )
             return [error_msg]
         # =========================================================
-        # END DEBUG SECTION
-        # =========================================================
 
-        # Identify players for the report naming
         stmt_players = (
             select(GamePlayer)
             .where(GamePlayer.game_id == game_id)
@@ -148,25 +140,45 @@ class EconomyService:
 
         yearly_revenue = {h.house_id: 0 for h in houses}
         regional_reports = {}
+        modifier_reports = {}  # To track which modifiers were applied
 
         # 2. STEP ONE: Fief Income & Manpower Regen
         for house in houses:
+            # Manpower calculation (unchanged)
             active_fiefs = [f for f in house.fiefs if not f.is_ruined]
-
-            # Manpower calculation
             if active_fiefs:
                 m_cap = sum(f.base_manpower for f in active_fiefs)
                 region = active_fiefs[0].region or "The Crownlands"
-                rate = REPOPULATION_RATES.get(region, 0.02)
+                # You might need to define REPOPULATION_RATES somewhere
+                rate = getattr(self, "REPOPULATION_RATES", {}).get(region, 0.02)
                 house.manpower_cap = m_cap
                 house.manpower = min(m_cap, house.manpower + int(m_cap * rate))
 
-            # Base Income calculation
+            # Base Income calculation (WITH MODIFIERS)
             fief_income = 0
             for f in house.fiefs:
                 if not f.is_ruined:
-                    fief_income += int(f.base_income * f.integration)
-                    # Gradually restore integration over time
+                    # --- NEW LOGIC: APPLY MODIFIER ---
+                    # Precedence: House > Region > Global
+                    modifier = mod_global
+                    if f.region in mod_regions:
+                        modifier = mod_regions[f.region]
+                    if str(house.house_id) in mod_houses:  # JSON keys must be strings
+                        modifier = mod_houses[str(house.house_id)]
+
+                    # Apply the modifier and add to income
+                    modified_income = int(f.base_income * f.integration * modifier)
+                    fief_income += modified_income
+
+                    # Track for report if a modifier was used
+                    if modifier != 1.0:
+                        if f.region not in modifier_reports:
+                            modifier_reports[f.region] = []
+                        modifier_reports[f.region].append(
+                            f"  - *{house.name} income modified by {modifier*100:.0f}%*"
+                        )
+                    # --- END NEW LOGIC ---
+
                     if f.integration < 1.0:
                         f.integration = min(1.0, f.integration + 0.20)
 
@@ -174,15 +186,12 @@ class EconomyService:
             yearly_revenue[house.house_id] = fief_income
 
         # 3. STEP TWO: Tax Flow (Bottom-Up Logic)
-
-        # Standard recursive depth (safe now because we checked for cycles above)
         def get_feudal_depth(h, depth=0):
             if not h.liege_id or h.liege_id not in house_map:
                 return depth
             return get_feudal_depth(house_map[h.liege_id], depth + 1)
 
         taxable_houses = [h for h in houses if h.liege_id and h.paying_taxes]
-        # Sort by depth descending (Vassals [Depth 2] -> Heirs [Depth 1] -> King [Depth 0])
         taxable_houses.sort(key=lambda h: get_feudal_depth(h), reverse=True)
 
         for house in taxable_houses:
@@ -203,8 +212,9 @@ class EconomyService:
                 if house.treasury >= tax_amount:
                     house.treasury -= tax_amount
                     liege.treasury += tax_amount
-                    # Crucial: The liege now has more revenue to pay THEIR liege
-                    yearly_revenue[liege.house_id] += tax_amount
+                    yearly_revenue[
+                        liege.house_id
+                    ] += tax_amount  # Liege's income for THEIR taxes
                     regional_reports[region_name].append(
                         f"  💸 {get_report_name(house)} ➔ {get_report_name(liege)}: `{tax_amount}g`"
                     )
@@ -217,13 +227,25 @@ class EconomyService:
 
         # 4. Build Report
         header = "## 📜 Royal Fiscal Report\n*Taxes collected and integration restored.*\n━━━━━━━━━━━━━━━━━━\n"
-        if not regional_reports:
-            return [header + "\n*No taxes were exchanged this year.*"]
+        if not regional_reports and not modifier_reports:
+            return [header + "\n*No economic activity to report this year.*"]
 
         content_lines = []
-        for region in sorted(regional_reports.keys()):
+        # Combine tax and modifier reports for a clean output
+        all_regions = sorted(
+            set(regional_reports.keys()) | set(modifier_reports.keys())
+        )
+
+        for region in all_regions:
             content_lines.append(f"### 🚩 {region.upper()}")
-            content_lines.extend(regional_reports[region])
+            # Add tax lines first
+            if region in regional_reports:
+                content_lines.extend(regional_reports[region])
+            # Add modifier notes after
+            if region in modifier_reports:
+                content_lines.extend(
+                    list(set(modifier_reports[region]))
+                )  # Use set to avoid duplicate notes
             content_lines.append("")
 
         # 5. Pagination
@@ -239,19 +261,143 @@ class EconomyService:
     async def calculate_tax_income_for_house(
         self, liege_house_id: int
     ) -> tuple[list, int]:
+        """
+        Calculates the projected tax income a liege will receive from their direct vassals.
+        This now correctly applies any active global, regional, or house-specific income modifiers.
+        """
+        # 1. Load Game Data to get Income Modifiers
+        # We need the game_id, which we can get from the liege house itself.
+        liege_house = await self.session.get(House, liege_house_id)
+        if not liege_house:
+            return [], 0  # Return empty if the liege house doesn't exist
+
+        game = await self.session.get(Game, liege_house.game_id)
+        if not game:
+            return [], 0
+
+        # Load modifiers with safe defaults
+        income_mods = game.income_modifiers or {}
+        mod_global = income_mods.get("global", 1.0)
+        mod_regions = income_mods.get("regions", {})
+        mod_houses = income_mods.get("houses", {})
+
+        # 2. Find all direct vassals of the liege
         stmt = (
             select(House)
             .where(House.liege_id == liege_house_id)
-            .options(selectinload(House.fiefs))
+            .options(selectinload(House.fiefs))  # Eagerly load fiefs
         )
         vassals = (await self.session.execute(stmt)).scalars().all()
-        total, reports = 0, []
-        for v in vassals:
-            gross = sum(
-                int(f.base_income * f.integration) for f in v.fiefs if not f.is_ruined
+
+        total_tax_income = 0
+        vassal_reports = []
+
+        # 3. Calculate income for each vassal
+        for vassal in vassals:
+            gross_modified_income = 0
+            for fief in vassal.fiefs:
+                if not fief.is_ruined:
+                    # --- APPLY MODIFIER LOGIC (Same as run_fiscal_year) ---
+                    # Precedence: House > Region > Global
+                    modifier = mod_global
+                    if fief.region in mod_regions:
+                        modifier = mod_regions[fief.region]
+                    # JSON keys must be strings, so we convert the house ID
+                    if str(vassal.house_id) in mod_houses:
+                        modifier = mod_houses[str(vassal.house_id)]
+
+                    # Apply the final modifier to this fief's income
+                    modified_income = int(
+                        fief.base_income * fief.integration * modifier
+                    )
+                    gross_modified_income += modified_income
+
+            # 4. Calculate Tax based on the MODIFIED income
+            tax_rate = vassal.tax_rate if vassal.tax_rate is not None else 0.10
+            tax_due = int(gross_modified_income * tax_rate)
+            total_tax_income += tax_due
+
+            vassal_reports.append(
+                (
+                    vassal.name.replace("[", "").replace("]", ""),
+                    gross_modified_income,
+                    tax_rate,
+                    tax_due,
+                )
             )
-            rate = v.tax_rate if v.tax_rate is not None else 0.10
-            tax = int(gross * rate)
-            total += tax
-            reports.append((v.name.replace("[", "").replace("]", ""), gross, rate, tax))
-        return reports, total
+
+        return vassal_reports, total_tax_income
+
+    # In your EconomyService class
+    async def set_income_modifier(
+        self, game_id: int, mod_type: str, target: str, value_str: str
+    ):
+        """Sets or resets an income modifier for the entire game."""
+        game = await self.session.get(Game, game_id)
+        if not game:
+            return False, "Game not found."
+
+        # 1. Parse the value
+        value = None
+        if value_str == "reset":
+            value = None  # Sentinel for deletion
+        elif value_str == "half":
+            value = 0.5
+        elif value_str == "full":
+            value = 1.0
+        elif value_str.endswith("%"):
+            try:
+                value = float(value_str.strip("%")) / 100.0
+            except ValueError:
+                return False, "Invalid percentage."
+        else:
+            return (
+                False,
+                "Invalid value. Use 'half', 'full', 'reset', or a percentage (e.g., '50%').",
+            )
+
+        # 2. Get the current modifiers
+        modifiers = game.income_modifiers.copy() if game.income_modifiers else {}
+
+        # 3. Apply the change
+        if mod_type == "global":
+            if value is None:
+                modifiers.pop("global", None)
+            else:
+                modifiers["global"] = value
+            msg = f"Global income modifier set to {value_str}."
+
+        elif mod_type == "region":
+            if "regions" not in modifiers:
+                modifiers["regions"] = {}
+            if value is None:
+                modifiers["regions"].pop(target, None)
+            else:
+                modifiers["regions"][target] = value
+            msg = f"Income modifier for region '{target}' set to {value_str}."
+
+        elif mod_type == "house":
+            # Find house by name to get its ID
+            stmt = select(House.house_id).where(
+                House.game_id == game_id, House.name.ilike(target)
+            )
+            house_id = (await self.session.execute(stmt)).scalar()
+            if not house_id:
+                return False, f"House '{target}' not found."
+
+            if "houses" not in modifiers:
+                modifiers["houses"] = {}
+            if value is None:
+                modifiers["houses"].pop(str(house_id), None)
+            else:
+                modifiers["houses"][str(house_id)] = value  # JSON keys must be strings
+            msg = f"Income modifier for House {target} set to {value_str}."
+
+        else:
+            return False, "Invalid modifier type. Use 'global', 'region', or 'house'."
+
+        # 4. Save to DB
+        game.income_modifiers = modifiers
+        flag_modified(game, "income_modifiers")
+        await self.session.commit()
+        return True, msg

@@ -61,6 +61,7 @@ class Game(Base):
     players = relationship(
         "GamePlayer", back_populates="game", cascade="all, delete-orphan"
     )
+    income_modifiers = Column(JSON, default={}, server_default="{}")
 
 
 class User(Base):
