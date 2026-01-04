@@ -26,7 +26,7 @@ from app.services.warfare_service import WarfareService, FOG_OF_WAR_THRESHOLD
 from app.tasks.light_tasks import resolve_army_arrival, handle_gate_response
 from app.ui.march_view import ArmySelectView, JourneyArmySelectView
 from app.ui.paginator import Paginator
-from app.ui.sail_view import FleetSelectView
+from app.ui.sail_view import FleetSelectView, DirectSailView
 from app.ui.redirect_view import RedirectSelectView
 from app.ui.coalition_view import CoalitionConsentView
 from app.ui.gate_view import GateActionView
@@ -1847,13 +1847,19 @@ class WarfareCog(commands.Cog):
 
     @commands.command(name="sail")
     @commands.check(is_in_house_channel)
-    async def sail(self, ctx):
-        """Initiates the interactive sail order UI for SEA armies."""
+    async def sail(self, ctx, fleet_id: int = None):
+        """
+        Initiates sail orders.
+        Usage:
+        !sail          (Select from menu)
+        !sail [ID]     (Shortcut to specific fleet)
+        """
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
+            # Get Player
             player = await session.scalar(
                 select(GamePlayer)
                 .join(User)
@@ -1864,6 +1870,36 @@ class WarfareCog(commands.Cog):
             if not player or not player.claimed_house_id:
                 return await ctx.send("❌ You do not have a house to command.")
 
+            # --- PATH A: SHORTCUT (!sail 123) ---
+            if fleet_id:
+                fleet = await ArmyRepo.get_army_by_id(session, fleet_id)
+
+                # Validation
+                if not fleet:
+                    return await ctx.send(f"❌ Fleet ID {fleet_id} not found.")
+                if fleet.house_id != player.claimed_house_id:
+                    return await ctx.send(f"❌ You do not command Fleet {fleet_id}.")
+                if fleet.army_type != "SEA":
+                    return await ctx.send(
+                        f"❌ Unit {fleet_id} is not a fleet. Use `!march`."
+                    )
+                if fleet.status not in ["IDLE", "DOCKED", "GARRISONED", "RETREATING"]:
+                    return await ctx.send(
+                        f"❌ Fleet is currently **{fleet.status}** and cannot receive new orders."
+                    )
+
+                # Create Shortcut View
+                # Hack: attach discord ID to fleet obj temporarily for the view check
+                fleet.player_discord_id = ctx.author.id
+
+                view = DirectSailView(self.bot, fleet, game.ship_capacity)
+                return await ctx.send(
+                    f"⚓ **Orders for {fleet.commander_name}** ({fleet.troop_count} ships)\n"
+                    f"Click below to set destination and cargo.",
+                    view=view,
+                )
+
+            # --- PATH B: MENU SELECTION (!sail) ---
             # Fetch only the user's available SEA armies (fleets)
             available_fleets = (
                 (
@@ -1873,7 +1909,7 @@ class WarfareCog(commands.Cog):
                             Army.army_type == "SEA",
                             Army.status.in_(
                                 ["IDLE", "DOCKED", "GARRISONED", "RETREATING"]
-                            ),  # Or whatever your idle statuses are
+                            ),
                         )
                     )
                 )
@@ -2150,8 +2186,8 @@ class WarfareCog(commands.Cog):
         self,
         ctx,
         target_house_id: int,
-        fleet_id: int = None,  # Made Optional to trigger UI
-        dest_name: str = None,  # Made Optional
+        fleet_id: int = None,
+        dest_name: str = None,
         ships_input: str = "all",
         units_input: str = None,
         commander: str = None,
@@ -2161,15 +2197,16 @@ class WarfareCog(commands.Cog):
     ):
         """
         GM: Sail an NPC fleet.
-        Interactive: !gm_war sail [HouseID]
-        Manual: !gm_war sail [HouseID] [FleetID] [Dest] [Ships] [Units] ...
+        1. Select:   !gm_war sail [HouseID]
+        2. Shortcut: !gm_war sail [HouseID] [FleetID]
+        3. Manual:   !gm_war sail [HouseID] [FleetID] [Dest] ...
         """
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
-            # --- 1. INTERACTIVE MODE (UI) ---
+            # --- CASE 1: INTERACTIVE MENU (No Fleet ID) ---
             if fleet_id is None:
                 # Fetch available fleets for this NPC house
                 fleets = (
@@ -2193,7 +2230,6 @@ class WarfareCog(commands.Cog):
                         f"❌ House {target_house_id} has no available fleets."
                     )
 
-                # Import locally to avoid circular imports
                 from app.ui.gm_sail_view import GMFleetSelectView
 
                 view = GMFleetSelectView(self.bot, fleets, target_house_id)
@@ -2202,12 +2238,33 @@ class WarfareCog(commands.Cog):
                 )
                 return
 
-            # --- 2. MANUAL MODE (Original Command) ---
-            if not dest_name:
-                return await ctx.send(
-                    "❌ Manual Usage: `!gm_war sail [HouseID] [FleetID] [Destination]`"
-                )
+            # --- CASE 2: SHORTCUT UI (Fleet ID, but NO Destination) ---
+            if fleet_id is not None and dest_name is None:
+                fleet = await ArmyRepo.get_army_by_id(session, fleet_id)
 
+                if not fleet:
+                    return await ctx.send(f"❌ Fleet {fleet_id} not found.")
+                if fleet.house_id != target_house_id:
+                    return await ctx.send(
+                        f"❌ Fleet {fleet_id} does not belong to House {target_house_id}."
+                    )
+                if fleet.army_type != "SEA":
+                    return await ctx.send("❌ Unit is not a fleet.")
+
+                # Import the new Direct View
+                from app.ui.gm_sail_view import DirectGMSailView
+
+                view = DirectGMSailView(
+                    self.bot, fleet, target_house_id, game.ship_capacity
+                )
+                await ctx.send(
+                    f"⚓ **GM Override:** Orders for {fleet.commander_name} (ID: {fleet.army_id})\n"
+                    f"Click below to set destination and cargo.",
+                    view=view,
+                )
+                return
+
+            # --- CASE 3: MANUAL EXECUTION (All Args Provided) ---
             gm_user_obj = await session.scalar(
                 select(User).where(User.discord_id == ctx.author.id)
             )
@@ -2225,12 +2282,12 @@ class WarfareCog(commands.Cog):
                 commander=commander,
                 gold_to_carry=gold_to_carry,
                 waypoints=waypoints,
-                is_gm_override=True,  # Override ownership
-                acting_house_id=target_house_id,  # Act as NPC
+                is_gm_override=True,
+                acting_house_id=target_house_id,
             )
 
             if success:
-                # GM Feedback (Private/Contextual)
+                # GM Feedback
                 response_embed = discord.Embed(
                     title=f"✅ GM Sail Order: House {target_house_id}",
                     description=f"**{result_or_msg['commander']}** ({result_or_msg['count']} men) {result_or_msg.get('journey_summary', 'set sail')}.",
@@ -2238,11 +2295,6 @@ class WarfareCog(commands.Cog):
                 )
                 response_embed.add_field(
                     name="Est. Time", value=result_or_msg["time"], inline=True
-                )
-                response_embed.add_field(
-                    name="Gold",
-                    value=str(result_or_msg.get("gold_carried", 0)),
-                    inline=True,
                 )
 
                 if result_or_msg.get("image"):
@@ -2255,13 +2307,12 @@ class WarfareCog(commands.Cog):
                 else:
                     await ctx.send(embed=response_embed)
 
-                # Public Fog of War (Rumors) -> general-movements
+                # Public Fog
                 if fog_msg:
                     gen_channel = discord.utils.get(
                         ctx.guild.text_channels, name="general-movements"
                     )
                     if gen_channel:
-                        # Send raw message (looks like a rumor)
                         await gen_channel.send(fog_msg)
             else:
                 await ctx.send(f"❌ GM Command Failed: {result_or_msg}")
@@ -2619,6 +2670,23 @@ class WarfareCog(commands.Cog):
                         )
             else:
                 await ctx.send(f"❌ GM Command Failed: {result_or_msg}")
+
+    @gm_war.command(name="delete_army")
+    @commands.check(is_gm)
+    async def gm_delete_army(self, ctx, army_id: int):
+        """
+        GM: Force delete an army (and its cargo).
+        Usage: !gm_war delete_army [ArmyID]
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            service = WarfareService(session)
+            success, msg = await service.delete_army(game.game_id, army_id)
+
+            await ctx.send(msg)
 
 
 async def setup(bot):

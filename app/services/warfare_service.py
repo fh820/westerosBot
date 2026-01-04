@@ -5,7 +5,17 @@ from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories import ArmyRepo
-from app.db.models import Army, GamePlayer, Fief, User, House, ArmyContingent, Game
+from app.db.models import (
+    Army,
+    GamePlayer,
+    Fief,
+    User,
+    House,
+    ArmyContingent,
+    Game,
+    Battle,
+    MarchLog,
+)
 from app.services.travel_calculator import calculate_travel_duration, format_duration
 from app.celery_app import celery_app
 import os
@@ -22,6 +32,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from sqlalchemy import select, delete, or_
 from app.db.models import PendingInteraction, Army, ArmyContingent, GamePlayer, User
+from celery.result import AsyncResult
 
 FOG_OF_WAR_THRESHOLD = 20
 FERRY_THRESHOLD = 20  # NEW: Max army size that can use a "ferry"
@@ -3039,7 +3050,14 @@ class WarfareService:
         # =================================================================
         # 4. PREPARE FLEET & GOLD
         # =================================================================
-        house_obj = await self.session.get(House, effective_house_id)
+        stmt_house = (
+            select(House)
+            .where(House.house_id == effective_house_id)
+            .options(selectinload(House.fiefs))
+        )
+        house_obj = (await self.session.execute(stmt_house)).scalar_one_or_none()
+        if not house_obj:
+            return False, f"❌ House ID {effective_house_id} not found.", None
         house_region = None
         if house_obj.fiefs:
             # Assuming the house's primary region is its first fief's region
@@ -3468,6 +3486,61 @@ class WarfareService:
         return True, (
             f"🏰 **{fief.name} Occupied!**\n"
             f"Since there was no garrison, your forces marched right in.\n"
-            f"💰 Treasury seized: **{loot}** Gold.\n"
+            f"💰 Treasury seized.\n"
             f"📉 Integration reset to **10%**.{captured_text}"
+        )
+
+    async def delete_army(self, game_id: int, army_id: int):
+        """
+        GM Tool: Forcefully deletes an army and cleans up all references
+        (Interactions, Battles, March Logs, Celery Tasks).
+        """
+        army = await self.session.get(Army, army_id)
+        if not army:
+            return False, "❌ Army not found."
+
+        # 1. Stop Movement (Revoke Celery Task)
+        if army.task_id:
+            try:
+                AsyncResult(army.task_id, app=celery_app).revoke(terminate=True)
+            except Exception as e:
+                print(f"[WARN] Failed to revoke task for army {army_id}: {e}")
+
+        # 2. Delete Pending Interactions (Prevents FK Error)
+        await self.session.execute(
+            delete(PendingInteraction).where(
+                or_(
+                    PendingInteraction.army1_id == army_id,
+                    PendingInteraction.army2_id == army_id,
+                )
+            )
+        )
+
+        # 3. Delete Active Battles (Prevents FK Error)
+        await self.session.execute(
+            delete(Battle).where(
+                or_(Battle.attacker_id == army_id, Battle.defender_id == army_id)
+            )
+        )
+
+        # 4. Delete March Logs (The Fix for your current error)
+        await self.session.execute(delete(MarchLog).where(MarchLog.army_id == army_id))
+
+        # 5. Capture Info for Log
+        name = army.commander_name
+        troops = army.troop_count
+        gold = army.treasury or 0
+        cargo_info = ""
+        if army.cargo:
+            c_count = army.cargo.get("troop_count", 0)
+            if c_count > 0:
+                cargo_info = f" (carrying {c_count} troops)"
+
+        # 6. Delete the Army
+        await self.session.delete(army)
+        await self.session.commit()
+
+        return (
+            True,
+            f"✅ **Deleted:** {name} (ID: {army_id})\n📉 **Loss:** {troops} units{cargo_info} and {gold} gold.",
         )

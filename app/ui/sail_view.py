@@ -648,3 +648,42 @@ class FleetSelectView(discord.ui.View):
             await interaction.response.send_modal(modal)
         self.stop()
         await interaction.message.delete()
+
+
+class DirectSailView(discord.ui.View):
+    """
+    A specific view for when a user types !sail [ID].
+    Provides a button to immediately open the modal for that fleet.
+    """
+
+    def __init__(self, bot, fleet, ship_capacity):
+        super().__init__(timeout=60)
+        self.bot = bot
+        self.fleet = fleet
+        self.ship_capacity = ship_capacity
+
+    @discord.ui.button(
+        label="Configure Sail Orders", style=discord.ButtonStyle.primary, emoji="⚓"
+    )
+    async def configure(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        # Verify ownership again just in case
+        if (
+            interaction.user.id != self.fleet.player_discord_id
+            and not interaction.user.guild_permissions.administrator
+        ):
+            return await interaction.response.send_message(
+                "❌ You do not control this fleet.", ephemeral=True
+            )
+
+        modal = SailSetupModal(
+            bot=self.bot, fleet=self.fleet, ship_capacity=self.ship_capacity
+        )
+        await interaction.response.send_modal(modal)
+        self.stop()
+        # Disable button after clicking to prevent spam
+        button.disabled = True
+        await interaction.edit_original_response(
+            content=f"📝 Configuring **{self.fleet.commander_name}**...", view=self
+        )

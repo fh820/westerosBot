@@ -388,6 +388,11 @@ class GMSailContinueView(View):
 # ============================================================
 #               STEP 2: SETUP MODAL (GM)
 # ============================================================
+
+
+# ============================================================
+#               STEP 2: SETUP MODAL (GM)
+# ============================================================
 class GMSailSetupModal(Modal):
     def __init__(self, bot, fleet: Army, target_house_id: int, ship_capacity: int):
         super().__init__(title=f"GM Sail: House {target_house_id}")
@@ -396,7 +401,7 @@ class GMSailSetupModal(Modal):
         self.target_house_id = target_house_id
         self.has_cargo = bool(fleet.cargo and fleet.cargo.get("troop_count", 0) > 0)
 
-        # The TextInput fields must be defined before their properties can be accessed.
+        # --- FIX: DEFINE UI ELEMENTS FIRST ---
         self.ships = TextInput(
             label=f"Ships (Cap: {ship_capacity})",
             placeholder=f"all, or number (Max {fleet.troop_count})",
@@ -416,7 +421,7 @@ class GMSailSetupModal(Modal):
         )
         # --- END FIX ---
 
-        # Now that self.gold exists, we can safely apply the gold lock logic.
+        # Now that self.gold exists, we can safely apply the lock logic
         self.is_gold_locked = False
         if fleet.treasury and fleet.treasury > 0:
             self.gold.placeholder = f"Fleet already carrying {fleet.treasury} gold."
@@ -424,7 +429,7 @@ class GMSailSetupModal(Modal):
             self.gold.disabled = True
             self.is_gold_locked = True
 
-        # Add the items to the view after they are fully configured.
+        # Add items to the view
         self.add_item(self.ships)
         self.add_item(self.gold)
         self.add_item(self.destination)
@@ -445,7 +450,7 @@ class GMSailSetupModal(Modal):
 
         setup_data = {
             "ships": self.ships.value,
-            "gold": gold_amount,  # This is now correctly 0 if gold was locked
+            "gold": gold_amount,  # Correctly 0 if locked
             "destination": self.destination.value,
             "waypoints": self.waypoints.value or None,
         }
@@ -461,13 +466,14 @@ class GMSailSetupModal(Modal):
                     select(User).where(User.discord_id == interaction.user.id)
                 )
                 service = WarfareService(session)
+
                 success, result, fog_msg = await service.sail_fleet(
                     game_id=game.game_id,
                     user_id=gm_user.user_id,
                     fleet_id=self.fleet.army_id,
                     ships_input=setup_data["ships"],
                     dest_name=setup_data["destination"],
-                    units_input=None,
+                    units_input=None,  # Use existing cargo
                     commander=None,
                     gold_to_carry=setup_data["gold"],
                     waypoints=setup_data["waypoints"],
@@ -485,7 +491,7 @@ class GMSailSetupModal(Modal):
                 Fief.game_id == self.fleet.game_id,
                 Fief.location_x == self.fleet.location_x,
                 Fief.location_y == self.fleet.location_y,
-                Fief.owner_id == self.fleet.house_id,
+                Fief.owner_id == self.fleet.house_id,  # Must own the port
             )
             is_friendly = (await session.execute(stmt)).scalar_one_or_none()
 
@@ -588,3 +594,38 @@ async def send_gm_sail_feedback(interaction, success, result, fog_msg, house_id)
         )
         if gen_channel:
             await gen_channel.send(fog_msg)
+
+
+class DirectGMSailView(View):
+    """
+    Shows a button to configure a specific fleet directly.
+    Triggered by: !gm_war sail [HouseID] [FleetID]
+    """
+
+    def __init__(self, bot, fleet, target_house_id, ship_capacity):
+        super().__init__(timeout=60)
+        self.bot = bot
+        self.fleet = fleet
+        self.target_house_id = target_house_id
+        self.ship_capacity = ship_capacity
+
+    @discord.ui.button(
+        label="Configure Sail Orders", style=discord.ButtonStyle.primary, emoji="⚓"
+    )
+    async def configure(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message(
+                "❌ GM Only.", ephemeral=True
+            )
+
+        modal = GMSailSetupModal(
+            self.bot, self.fleet, self.target_house_id, self.ship_capacity
+        )
+        await interaction.response.send_modal(modal)
+        self.stop()
+        button.disabled = True
+        await interaction.edit_original_response(
+            content=f"📝 GM Configuring **{self.fleet.commander_name}**...", view=self
+        )
