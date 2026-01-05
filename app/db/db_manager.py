@@ -22,7 +22,9 @@ if not DATABASE_URL:
     )
 
 # Create the Async Engine
-engine = create_async_engine(DATABASE_URL, echo=False)
+engine = create_async_engine(
+    DATABASE_URL, echo=False, connect_args={"statement_cache_size": 0}
+)
 
 # Async Session Factory
 get_session_factory = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
