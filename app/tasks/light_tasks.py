@@ -144,23 +144,40 @@ def process_game_upkeep(game_id: int):
 @celery_app.task(bind=True)
 def resolve_army_arrival(self, army_id: int):
     """
-    Finalizes army movement.
-    Spawns land armies for hybrid journeys (Sail -> March).
+    Finalizes army movement. This version is IDEMPOTENT to prevent race conditions
+    and optimized to reduce database queries.
     """
     from sqlalchemy.orm.attributes import flag_modified
 
     session = get_sync_session()
-
     try:
+        # Start a transaction. The lock we acquire will be held until this
+        # transaction is either committed or rolled back.
+        session.begin()
+
+        # =============================================================
+        # THE FIX: Eagerly load all data and acquire a database lock.
+        # `with_for_update()` tells Postgres: "Lock this row. Do not let any
+        # other transaction read or write to it until I am done."
+        # =============================================================
         army = (
             session.query(Army)
+            .filter_by(army_id=army_id)
             .options(selectinload(Army.house).selectinload(House.game))
-            .get(army_id)
+            .with_for_update()  # <-- This is the lock.
+            .first()
         )
 
+        # THE CRITICAL CHECK: This is now race-condition-proof.
+        # If a duplicate task runs, it will wait at the query above. By the time
+        # it gets the lock, the first task will have already changed the status,
+        # so this check will correctly fail, preventing a duplicate notification.
         if not army or army.status not in ["MARCHING", "SAILING"]:
+            session.commit()  # End the transaction to release the lock.
             session.close()
             return
+
+        # We now have an exclusive lock on the army. Proceed with game logic.
 
         # 1. Update Coordinates
         army.location_x = army.destination_x
@@ -196,19 +213,17 @@ def resolve_army_arrival(self, army_id: int):
                 arrival_time=now + datetime.timedelta(seconds=p["duration"]),
             )
             session.add(land_army)
-            session.flush()  # Get land_army.army_id
+            session.flush()  # Get land_army.army_id for logging and task scheduling
 
-            # Log the trajectory for the land leg (Required for interceptions)
+            # Log the trajectory for the land leg
             path_points = p.get("path", [])
-            for i, pt in enumerate(path_points):
-                session.add(
-                    MarchLog(
-                        army_id=land_army.army_id,
-                        game_id=army.game_id,
-                        x=pt[0],
-                        y=pt[1],
-                    )
+            march_logs_to_add = [
+                MarchLog(
+                    army_id=land_army.army_id, game_id=army.game_id, x=pt[0], y=pt[1]
                 )
+                for pt in path_points
+            ]
+            session.add_all(march_logs_to_add)
 
             # Schedule final destination arrival
             new_task = resolve_army_arrival.apply_async(
@@ -236,7 +251,7 @@ def resolve_army_arrival(self, army_id: int):
         army.status = new_status
         session.query(MarchLog).filter_by(army_id=army_id).delete()
 
-        # 4. NOTIFICATION DATA (Fetch Locked Quarters ID)
+        # 4. NOTIFICATION DATA (This will now only run ONCE)
         owner_data = (
             session.query(User.discord_id, GamePlayer.private_channel_id)
             .join(GamePlayer)
@@ -265,22 +280,23 @@ def resolve_army_arrival(self, army_id: int):
             "house_name": army.house.name,
             "house_id": army.house_id,
             "owner_id": owner_data.discord_id if owner_data else None,
-            "private_channel_id": (
-                owner_data.private_channel_id if owner_data else None
-            ),  # FOR COG DELIVERY
+            "private_channel_id": owner_data.private_channel_id if owner_data else None,
             "commander": army.commander_name,
             "troops": army.troop_count,
             "unit_type": army.army_type,
             "location": loc_name,
         }
         REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
+
+        # All logic is complete. Commit all changes to the database and release the lock.
         session.commit()
 
     except Exception as e:
-        session.rollback()
+        session.rollback()  # On any error, undo all changes and release the lock.
+        # Retry the task later. It's safe now because of the idempotent check.
         raise self.retry(exc=e, countdown=60)
     finally:
-        session.close()
+        session.close()  # Always close the session to return the connection to the pool.
 
 
 @celery_app.task
