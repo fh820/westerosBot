@@ -23,7 +23,11 @@ if not DATABASE_URL:
 
 # Create the Async Engine
 engine = create_async_engine(
-    DATABASE_URL, echo=False, connect_args={"statement_cache_size": 0}
+    DATABASE_URL,
+    echo=False,
+    connect_args={"statement_cache_size": 0},
+    pool_pre_ping=True,  # <-- FIX #1: Checks if the connection is alive before using it.
+    pool_recycle=1800,  # <-- FIX #2: Closes and replaces connections older than 30 minutes (1800s).
 )
 
 # Async Session Factory
