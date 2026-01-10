@@ -537,27 +537,45 @@ def initiate_player_interaction(
 ):
     """
     Creates the PendingInteraction record.
-    FIXES:
-    1. Allows Sailing/Docked status.
-    2. Prevents Duplicates.
-    3. Prevents INSTANT EXPIRY if fleets are close.
+    This version is IDEMPOTENT using database locks to prevent duplicate interactions.
     """
     session = get_sync_session()
     try:
-        # 1. Check if armies still exist
-        army1 = session.query(Army).filter(Army.army_id == army1_id).first()
-        army2 = session.query(Army).filter(Army.army_id == army2_id).first()
+        # Start a transaction to ensure our lock is held until we are done.
+        session.begin()
 
-        # Valid statuses for triggering a fight
-        valid_moving_statuses = ["MARCHING", "SAILING", "DOCKED", "IDLE"]
+        # =============================================================
+        # THE FIX: Acquire an exclusive lock on both armies involved.
+        # We sort by ID to always lock in the same order, preventing deadlocks.
+        # Any duplicate task instance will be blocked here until this transaction completes.
+        # =============================================================
+        id1, id2 = sorted([army1_id, army2_id])
 
-        if not army1 or not army2 or army1.status not in valid_moving_statuses:
+        army1_locked = (
+            session.query(Army).filter(Army.army_id == id1).with_for_update().first()
+        )
+        army2_locked = (
+            session.query(Army).filter(Army.army_id == id2).with_for_update().first()
+        )
+
+        # We now have exclusive locks. We can safely perform our checks.
+
+        # 1. Check if armies still exist and are in a valid state
+        valid_statuses = ["MARCHING", "SAILING", "DOCKED", "IDLE"]
+        if (
+            not army1_locked
+            or not army2_locked
+            or army1_locked.status not in valid_statuses
+        ):
             print(
-                f"Interaction cancelled: Army {army1_id} or {army2_id} invalid status."
+                f"Interaction cancelled: Army {army1_id} or {army2_id} invalid or has invalid status."
             )
+            session.commit()  # Commit to release the locks
+            session.close()
             return
 
-        # 2. Check for Duplicates (Prevents Double Pings)
+        # 2. Race-Condition-Proof Duplicate Check
+        # Because we have the locks, this check is now guaranteed to be accurate.
         existing_interaction = (
             session.query(PendingInteraction)
             .filter(
@@ -577,22 +595,15 @@ def initiate_player_interaction(
             print(
                 f"DEBUG: Interaction between {army1_id} and {army2_id} already pending. Skipping."
             )
+            session.commit()  # Commit to release the locks
+            session.close()
             return
 
-        # 3. Calculate Expiry with SAFETY BUFFER (The Fix)
+        # 3. Calculate Expiry with SAFETY BUFFER (Your existing logic is correct)
         now = datetime.datetime.now(datetime.timezone.utc)
-
-        # Physical collision time
         calculated_expiry = intercept_time - datetime.timedelta(seconds=1)
-
-        # Minimum time: NOW + 2 Minutes
         min_expiry = now + datetime.timedelta(minutes=2)
-
-        # If the physical collision is too soon, force the 2-minute window
-        if calculated_expiry < min_expiry:
-            final_expiry = min_expiry
-        else:
-            final_expiry = calculated_expiry
+        final_expiry = max(calculated_expiry, min_expiry)
 
         # 4. Create the Database Record
         new_interaction = PendingInteraction(
@@ -600,25 +611,21 @@ def initiate_player_interaction(
             army1_id=army1_id,
             army2_id=army2_id,
             status="PENDING",
-            expires_at=final_expiry,  # Use the safe time
+            expires_at=final_expiry,
             location_x=intercept_x,
             location_y=intercept_y,
         )
         session.add(new_interaction)
         session.flush()
 
-        # 5. Schedule the resolver
+        # 5. Schedule the resolver task
         resolver_task = resolve_player_interaction.apply_async(
             args=[new_interaction.id], eta=final_expiry
         )
         new_interaction.resolver_task_id = resolver_task.id
-        session.commit()
 
-        # 6. Publish to Redis
-        payload = {
-            "type": "PROMPT_INTERACTION",
-            "interaction_id": new_interaction.id,
-        }
+        # 6. Publish to Redis (This will now only happen ONCE)
+        payload = {"type": "PROMPT_INTERACTION", "interaction_id": new_interaction.id}
         if REDIS_CLIENT:
             REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
 
@@ -626,11 +633,15 @@ def initiate_player_interaction(
             f"DEBUG: Created Interaction {new_interaction.id}. Expires in {(final_expiry - now).total_seconds():.1f}s"
         )
 
+        # All operations were successful. Commit the transaction to save the new
+        # interaction and release the locks on the armies.
+        session.commit()
+
     except Exception as e:
         print(f"❌ Error in initiate_player_interaction: {e}")
-        session.rollback()
+        session.rollback()  # Rollback on any error to release locks and undo changes.
     finally:
-        session.close()
+        session.close()  # Always close the session.
 
 
 # In app/tasks/light_tasks.py
