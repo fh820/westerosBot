@@ -500,8 +500,8 @@ class DiplomacyCog(commands.Cog):
 
                 try:
                     # 2. Execute Logic
-                    march_results = await service.execute_muster_from_pending_call(
-                        call_id
+                    march_results, fog_messages = (
+                        await service.execute_muster_from_pending_call(call_id)
                     )
 
                     if not march_results:
@@ -510,7 +510,13 @@ class DiplomacyCog(commands.Cog):
                             content="❌ **Error:** Could not execute muster. The call may have expired or already been processed."
                         )
                         return
-
+                    if fog_messages:
+                        movements_channel = discord.utils.get(
+                            interaction.guild.text_channels, name="general-movements"
+                        )
+                        if movements_channel:
+                            for msg in fog_messages:
+                                await movements_channel.send(msg)
                     # 3. Success - Update the original Panel
                     embed = discord.Embed(
                         title="✅ Muster Complete!",
