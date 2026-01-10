@@ -1168,9 +1168,7 @@ class WarfareCog(commands.Cog):
                 color=discord.Color.green(),
             )
             try:
-                await target_channel.send(
-                    content=f"<@{owner_discord_id}>", embed=embed_private
-                )
+                await target_channel.send(embed=embed_private)
                 notification_sent_to_player = True
             except:
                 pass
@@ -1203,13 +1201,7 @@ class WarfareCog(commands.Cog):
 
             if public_channel:
                 # Try to find a role matching the house name for a pretty mention
-                house_role = discord.utils.get(guild.roles, name=data["house_name"])
-                house_display = (
-                    house_role.mention
-                    if house_role
-                    else f"**House {data['house_name']}**"
-                )
-
+                house_display = f"**{data['house_name']}**"
                 public_msg = (
                     f"✅ The forces of {house_display} under the command of **{data['commander']}** "
                     f"have arrived at **{data['location']}**."
