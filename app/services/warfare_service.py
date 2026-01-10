@@ -33,10 +33,11 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from sqlalchemy import select, delete, or_
 from app.db.models import PendingInteraction, Army, ArmyContingent, GamePlayer, User
 from celery.result import AsyncResult
-
-FOG_OF_WAR_THRESHOLD = 20
-FERRY_THRESHOLD = 20  # NEW: Max army size that can use a "ferry"
-SEA_FOG_OF_WAR_THRESHOLD = 2
+from app.services.common import (
+    FOG_OF_WAR_THRESHOLD,
+    FERRY_THRESHOLD,
+    SEA_FOG_OF_WAR_THRESHOLD,
+)
 
 
 class WarfareService:

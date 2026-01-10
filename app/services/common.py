@@ -3,6 +3,10 @@ from sqlalchemy import select
 from app.db.models import Fief
 import re
 
+FOG_OF_WAR_THRESHOLD = 20
+FERRY_THRESHOLD = 20  # NEW: Max army size that can use a "ferry"
+SEA_FOG_OF_WAR_THRESHOLD = 2
+
 
 def slugify(text: str) -> str:
     """Standardizes strings to match Discord channel naming rules."""

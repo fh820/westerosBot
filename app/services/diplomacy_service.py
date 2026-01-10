@@ -19,7 +19,7 @@ import os
 from app.services.engine_manager import PF_ENGINE
 import math
 from sqlalchemy.orm.attributes import flag_modified
-from app.services.warfare_service import SEA_FOG_OF_WAR_THRESHOLD, FOG_OF_WAR_THRESHOLD
+from app.services.common import FOG_OF_WAR_THRESHOLD, SEA_FOG_OF_WAR_THRESHOLD
 
 
 class DiplomacyService:
