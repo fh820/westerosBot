@@ -1138,6 +1138,14 @@ class DiplomacyCog(commands.Cog):
                 PendingBannerCall.status == "PENDING_APPROVAL",
                 PendingBannerCall.call_type == "LAND",
             )
+            existing_call = (await session.execute(stmt_check)).scalars().first()
+            if existing_call:
+                # Now we can access its ID in the error message
+                error_msg = (
+                    f"❌ **Hold:** This house already has a pending call (ID: `{existing_call.id}`).\n"
+                    f"Use `!gm_diplomacy cancel_call {existing_call.id}` to clear it."
+                )
+                return await player_wait_msg.edit(content=error_msg)
             if (await session.execute(stmt_check)).scalars().first():
                 return await player_wait_msg.edit(
                     content=f"❌ **Hold:** This house already has a pending call."
