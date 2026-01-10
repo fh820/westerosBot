@@ -1455,6 +1455,47 @@ class DiplomacyCog(commands.Cog):
             )
             await ctx.send(f"🤖 GM Command: {msg}")
 
+    @gm_diplomacy.command(name="declare_fealty")
+    @commands.check(is_gm)
+    async def gm_declare_fealty(
+        self, ctx, vassal_house_id: int, *, new_liege_name: str
+    ):
+        """
+        GM: Make a house (player or NPC) declare fealty to another.
+        Usage: !gm_diplomacy declare_fealty [VassalHouseID] to [NewLiegeName]
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            # Instantiate your service
+            service = DiplomacyService(session)
+
+            # Call the service layer with the GM override flag
+            success, msg = await service.declare_fealty(
+                game_id=game.game_id,
+                vassal_house_id=vassal_house_id,
+                new_liege_name=new_liege_name,
+                is_gm_override=True,  # This flag tells the service to bypass player checks
+            )
+
+            # Post the result to the #declarations channel if successful
+            if success:
+                dec_channel = discord.utils.get(
+                    ctx.guild.text_channels, name="declarations"
+                )
+                if dec_channel:
+                    embed = discord.Embed(
+                        title="📜 Proclamation of Fealty (GM Decree)",
+                        description=msg,
+                        color=discord.Color.blue(),
+                    )
+                    await dec_channel.send(embed=embed)
+
+            # Always give feedback to the GM who ran the command
+            await ctx.send(f"🤖 GM Command Executed: {msg}")
+
 
 async def setup(bot):
     await bot.add_cog(DiplomacyCog(bot))
