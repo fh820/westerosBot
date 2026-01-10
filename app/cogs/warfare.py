@@ -2736,6 +2736,28 @@ class WarfareCog(commands.Cog):
 
             await ctx.send(msg)
 
+    @gm_war.command(name="transfer")
+    @commands.check(is_gm)
+    async def gm_transfer(self, ctx, source_army_id: int, target_army_id: int):
+        """
+        GM: Instantly transfers one army's troops into another, deleting the source.
+        Bypasses all game rules (owner, status, location).
+        Usage: !gm_war transfer [SourceArmyID] [TargetArmyID]
+        """
+        async with get_session() as session:
+            # We don't need game or user objects here as the service will handle validation
+
+            service = WarfareService(session)
+            success, msg = await service.gm_transfer_army(
+                source_army_id=source_army_id,
+                target_army_id=target_army_id,
+            )
+
+            if success:
+                await ctx.send(f"✅ **GM Transfer Complete:** {msg}")
+            else:
+                await ctx.send(f"❌ **GM Transfer Failed:** {msg}")
+
 
 async def setup(bot):
     await bot.add_cog(WarfareCog(bot))
