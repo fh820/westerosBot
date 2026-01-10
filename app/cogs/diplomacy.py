@@ -1455,11 +1455,9 @@ class DiplomacyCog(commands.Cog):
             )
             await ctx.send(f"🤖 GM Command: {msg}")
 
-    @gm_diplomacy.command(name="declare_fealty")
+    @gm_diplomacy.command(name="set_liege")
     @commands.check(is_gm)
-    async def gm_declare_fealty(
-        self, ctx, vassal_house_id: int, *, new_liege_name: str
-    ):
+    async def gm_set_liege(self, ctx, vassal_house_id: int, *, new_liege_name: str):
         """
         GM: Make a house (player or NPC) declare fealty to another.
         Usage: !gm_diplomacy declare_fealty [VassalHouseID] to [NewLiegeName]
