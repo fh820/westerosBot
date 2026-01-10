@@ -1494,6 +1494,46 @@ class DiplomacyCog(commands.Cog):
             # Always give feedback to the GM who ran the command
             await ctx.send(f"🤖 GM Command Executed: {msg}")
 
+    @gm_diplomacy.command(name="cancel_call")
+    @commands.check(is_gm)
+    async def gm_cancel_call(self, ctx, pending_call_id: int):
+        """
+        GM: Forcefully cancels a pending banner call that may be stuck.
+        Usage: !gm_diplomacy cancel_call [PendingCallID]
+        """
+        async with get_session() as session:
+            service = DiplomacyService(session)
+            success, msg = await service.gm_cancel_pending_call(pending_call_id)
+
+            if success:
+                await ctx.send(f"✅ **Call Cancelled:** {msg}")
+
+                # Try to clean up the original GM panel message
+                try:
+                    pending_call = await session.get(PendingBannerCall, pending_call_id)
+                    if (
+                        pending_call
+                        and pending_call.gm_channel_id
+                        and pending_call.gm_message_id
+                    ):
+                        gm_channel = self.bot.get_channel(pending_call.gm_channel_id)
+                        if gm_channel:
+                            gm_message = await gm_channel.fetch_message(
+                                pending_call.gm_message_id
+                            )
+                            if gm_message:
+                                embed = discord.Embed(
+                                    title="❌ Banner Call Cancelled (GM Override)",
+                                    color=discord.Color.red(),
+                                )
+                                await gm_message.edit(embed=embed, view=None)
+                except Exception as e:
+                    print(
+                        f"Failed to clean up GM panel for cancelled call {pending_call_id}: {e}"
+                    )
+            else:
+                await ctx.send(f"❌ **Failed to Cancel:** {msg}")
+
 
 async def setup(bot):
     await bot.add_cog(DiplomacyCog(bot))

@@ -929,3 +929,36 @@ class DiplomacyService:
             )
 
         return False, "❌ Invalid action. Use 'add' or 'remove'."
+
+    async def gm_cancel_pending_call(self, pending_call_id: int):
+        """
+        GM Tool: Finds a PendingBannerCall by its ID and sets its status to 'CANCELLED'.
+        """
+        try:
+            # Find the pending call in the database
+            pending_call = await self.session.get(PendingBannerCall, pending_call_id)
+
+            if not pending_call:
+                return False, f"No pending call found with ID {pending_call_id}."
+
+            if pending_call.status != "PENDING_APPROVAL":
+                return (
+                    False,
+                    f"Call ID {pending_call_id} is already resolved (Status: {pending_call.status}).",
+                )
+
+            # Update the status
+            pending_call.status = "CANCELLED"
+            await self.session.commit()
+
+            return (
+                True,
+                f"Pending Banner Call ID {pending_call_id} has been forcefully cancelled.",
+            )
+
+        except Exception as e:
+            await self.session.rollback()
+            import traceback
+
+            traceback.print_exc()
+            return False, f"An unexpected error occurred: {e}"
