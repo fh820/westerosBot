@@ -2758,6 +2758,25 @@ class WarfareCog(commands.Cog):
             else:
                 await ctx.send(f"❌ **GM Transfer Failed:** {msg}")
 
+    @gm_war.command(name="reassign")
+    @commands.check(is_gm)
+    async def gm_reassign(self, ctx, army_id: int, target_house_id: int):
+        """
+        GM: Instantly reassigns an army to a new house without changing its status.
+        Usage: !gm_war reassign [ArmyID] [NewOwnerHouseID]
+        """
+        async with get_session() as session:
+            service = WarfareService(session)
+            success, msg = await service.gm_reassign_army(
+                army_id=army_id,
+                new_owner_house_id=target_house_id,
+            )
+
+            if success:
+                await ctx.send(f"✅ **GM Reassignment Complete:** {msg}")
+            else:
+                await ctx.send(f"❌ **GM Reassignment Failed:** {msg}")
+
 
 async def setup(bot):
     await bot.add_cog(WarfareCog(bot))

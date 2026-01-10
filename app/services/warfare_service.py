@@ -3620,3 +3620,47 @@ class WarfareService:
 
             traceback.print_exc()
             return False, f"An unexpected error occurred: {e}"
+
+    async def gm_reassign_army(self, army_id: int, new_owner_house_id: int):
+        """
+        GM Tool: Changes the owner (house_id) of an army.
+        - Does NOT change the army's status, location, or destination.
+        - If the army is marching, it continues to do so for its new owner.
+        """
+        try:
+            # 1. Fetch the army and the new owner house to validate they exist
+            army_to_reassign = await self.session.get(
+                Army, army_id, options=[selectinload(Army.house)]
+            )
+            new_owner_house = await self.session.get(House, new_owner_house_id)
+
+            if not army_to_reassign:
+                return False, f"Source Army ID {army_id} not found."
+
+            if not new_owner_house:
+                return False, f"Target House ID {new_owner_house_id} not found."
+
+            if army_to_reassign.house_id == new_owner_house_id:
+                return False, "The army already belongs to that house."
+
+            # Store old owner name for the message
+            old_owner_name = army_to_reassign.house.name
+
+            # 2. Perform the ownership change
+            army_to_reassign.house_id = new_owner_house_id
+
+            # 3. Commit the change
+            await self.session.commit()
+
+            msg = (
+                f"Control of **{army_to_reassign.commander_name}** (ID: {army_id}) "
+                f"has been transferred from **{old_owner_name}** to **{new_owner_house.name}**."
+            )
+            return True, msg
+
+        except Exception as e:
+            await self.session.rollback()
+            import traceback
+
+            traceback.print_exc()
+            return False, f"An unexpected error occurred: {e}"
