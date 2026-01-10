@@ -279,7 +279,7 @@ def resolve_army_arrival(self, army_id: int):
             "guild_id": army.house.game.guild_id,
             "house_name": army.house.name,
             "house_id": army.house_id,
-            "owner_id": owner_data.discord_id if owner_data else None,
+            "owner_id": None,
             "private_channel_id": owner_data.private_channel_id if owner_data else None,
             "commander": army.commander_name,
             "troops": army.troop_count,
@@ -287,8 +287,6 @@ def resolve_army_arrival(self, army_id: int):
             "location": loc_name,
         }
         REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-
-        # All logic is complete. Commit all changes to the database and release the lock.
         session.commit()
 
     except Exception as e:
@@ -320,7 +318,7 @@ def dispatch_scout_report(
             )
             return {
                 "house_name": army.house.name,
-                "owner_id": player.discord_id if player else None,
+                "owner_id": None,
                 "private_channel_id": player.private_channel_id if player else None,
                 "commander": army.commander_name,
                 "troops": army.troop_count,
