@@ -36,6 +36,7 @@ from celery.result import AsyncResult
 
 FOG_OF_WAR_THRESHOLD = 20
 FERRY_THRESHOLD = 20  # NEW: Max army size that can use a "ferry"
+SEA_FOG_OF_WAR_THRESHOLD = 2
 
 
 class WarfareService:
@@ -3131,6 +3132,12 @@ class WarfareService:
 
         # Final Response Data
         total_time_secs = sea_dur + (land_dur if needs_hybrid_journey else 0)
+        direction = self.calculate_direction(start_coords, fleet_final_dest_coords)
+        fog_msg = await self.get_fog_of_war_message(
+            fleet_to_sail, game_id, start_coords, direction
+        )
+        if fleet_to_sail.troop_count <= SEA_FOG_OF_WAR_THRESHOLD:
+            fog_msg = None
         return (
             True,
             {
@@ -3143,7 +3150,7 @@ class WarfareService:
                 "journey_summary": journey_summary,
                 "gold_carried": gold_to_carry,
             },
-            None,
+            fog_msg,
         )
 
     def _debug_get_terrain_type(self, x: int, y: int) -> str:
