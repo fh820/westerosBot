@@ -11,6 +11,7 @@ from app.services.pathfinder_bot_engine import (
 )
 from app.db.db_manager import init_db
 from app.db.db_manager import init_db, get_session_factory
+import traceback  # <-- ADD THIS IMPORT
 
 # 1. Load Environment Variables (for your token)
 load_dotenv()
@@ -31,7 +32,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def setup_hook():
     print("--- ⚔️  WesterosBot Initializing ⚔️  ---")
-    print(f"--- ⚔️  BOT CWD: {os.getcwd()} ⚔️  ---")  # ADD THIS LINE
+    print(f"--- ⚔️  BOT CWD: {os.getcwd()} ⚔️  ---")
 
     # 1. Connect to Database (Just connection, no world generation)
     print("Connecting to Database...")
@@ -44,15 +45,34 @@ async def setup_hook():
     )
     print("✅ Pathfinder Engine Ready.")
 
+    # =================================================================
+    # THE CORRECTED, AGGRESSIVE LOGGING BLOCK
+    # =================================================================
     # 3. Load Cogs (Commands)
-    print("Loading command cogs...")
-    for filename in os.listdir(os.path.join(os.path.dirname(__file__), "cogs")):
+    print("\n--- AGGRESSIVE COG LOADING ---")
+    cogs_path = os.path.join(os.path.dirname(__file__), "cogs")
+    print(f"Searching for cogs in: {os.path.abspath(cogs_path)}")
+
+    if not os.path.isdir(cogs_path):
+        print(f"FATAL: Cog directory not found at {cogs_path}")
+        return
+
+    for filename in os.listdir(cogs_path):
         if filename.endswith(".py") and not filename.startswith("__"):
+            cog_name = f"app.cogs.{filename[:-3]}"
+            print(f"  -> Attempting to load '{cog_name}'...")
             try:
-                await bot.load_extension(f"app.cogs.{filename[:-3]}")
-                print(f"  - Loaded: {filename}")
+                await bot.load_extension(cog_name)
+                print(f"    ✅ SUCCESS: Cog '{cog_name}' loaded.")
             except Exception as e:
-                print(f"  - ⚠️ FAILED to load {filename}: {e}")
+                print(f"    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                print(f"    ❌ FAILED to load cog '{cog_name}'.")
+                print(f"    Error: {type(e).__name__} - {e}")
+                # Print the full, detailed traceback to the console
+                traceback.print_exc()
+                print(f"    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    print("--- FINISHED COG LOADING ---\n")
+    # =================================================================
 
     print("--- ✅ Setup Complete ---")
 
