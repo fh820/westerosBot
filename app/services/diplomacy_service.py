@@ -19,27 +19,41 @@ import os
 from app.services.engine_manager import PF_ENGINE
 import math
 from sqlalchemy.orm.attributes import flag_modified
+from app.services.warfare_service import SEA_FOG_OF_WAR_THRESHOLD, FOG_OF_WAR_THRESHOLD
 
 
 class DiplomacyService:
     def __init__(self, session):
         self.session = session
 
-    async def execute_muster_from_pending_call(self, pending_call_id: int) -> list:
+    async def execute_muster_from_pending_call(
+        self, pending_call_id: int
+    ) -> tuple[list, list]:
         """
         Final execution step for LAND or SEA levies.
         Muster troops/ships based on GM-approved percentages and issue movement orders.
+        UPDATED to return a tuple: (private_gm_results, public_fog_of_war_messages)
         """
+        # --- SETUP ---
         pending_call = await self.session.get(PendingBannerCall, pending_call_id)
         if not pending_call or pending_call.status != "PENDING_APPROVAL":
-            return []
+            return [], []
 
         game = await self.session.get(Game, pending_call.game_id)
+        if not game:
+            # If the game is somehow gone, we shouldn't proceed.
+            return ["❌ **Error:** Associated game not found."], []
 
-        # 1. Resolve Rally Point
+        # Initialize lists to hold our different types of messages
+        march_results = []
+        fog_of_war_messages = []
+
+        # --- RALLY POINT VALIDATION ---
         from app.services.warfare_service import WarfareService
 
-        war_service = WarfareService(self.session)
+        war_service = WarfareService(
+            self.session
+        )  # We will need this for Fog of War later
         rally_coords_dict = await war_service._get_location_from_db(
             game.game_id, pending_call.rally_point_name
         )
@@ -47,11 +61,10 @@ class DiplomacyService:
         if not rally_coords_dict:
             return [
                 f"❌ **Error:** Rally point '{pending_call.rally_point_name}' is invalid."
-            ]
+            ], []
 
         target_coords = (rally_coords_dict["x"], rally_coords_dict["y"])
         liege_house_id = pending_call.liege_house_id
-        march_results = []
 
         gm_settings = {
             "twins_open": game.twins_open,
@@ -61,21 +74,17 @@ class DiplomacyService:
             "sea_travel_allowed": game.sea_travel_allowed,
         }
 
-        # 2. Process Approved Vassals
+        # --- PROCESS APPROVED VASSALS LOOP ---
         for vassal in pending_call.vassal_data:
             house_id = vassal["house_id"]
             house_name = vassal["house_name"]
 
-            # Standardize based on call type
-            max_val = vassal.get("max_troops")
-
-            if max_val is None:
-                # Fallback for older records or raw data
-                max_val = vassal.get("max_amount")
-            # Handle standard keys from prepare_banner_call update
-            if max_val is None:
-                max_val = vassal.get("max_ships", 0)
-
+            # Standardize amount calculation
+            max_val = (
+                vassal.get("max_troops")
+                or vassal.get("max_amount")
+                or vassal.get("max_ships", 0)
+            )
             amount = int(max_val * vassal.get("percent", 0.0))
 
             if amount <= 0:
@@ -92,7 +101,7 @@ class DiplomacyService:
                 )
                 continue
 
-            # 3. Locate Source Army (Garrison or Fleet)
+            # Locate the source army to draft from
             stmt_army = select(Army).where(
                 Army.game_id == game.game_id,
                 Army.house_id == house_id,
@@ -100,19 +109,18 @@ class DiplomacyService:
                 Army.army_type == pending_call.call_type,
             )
             candidates = (await self.session.execute(stmt_army)).scalars().all()
-
-            found_army = None
-            for cand in candidates:
-                # Basic proximity check to ensure we aren't pulling a garrison from across the world
-                if (
-                    math.sqrt(
+            found_army = next(
+                (
+                    cand
+                    for cand in candidates
+                    if math.sqrt(
                         (cand.location_x - start_coords[0]) ** 2
                         + (cand.location_y - start_coords[1]) ** 2
                     )
                     < 5.0
-                ):
-                    found_army = cand
-                    break
+                ),
+                None,
+            )
 
             if not found_army:
                 march_results.append(
@@ -120,8 +128,7 @@ class DiplomacyService:
                 )
                 continue
 
-            # 4. Draft and Route
-            # Land ratio vs Sea ships
+            # Draft troops and prepare for routing
             if pending_call.call_type == "SEA":
                 source_comp = {"ships": amount}
             else:
@@ -133,12 +140,14 @@ class DiplomacyService:
 
             if found_army.troop_count > amount:
                 found_army.troop_count -= amount
+                # This composition update is a simplification; a more robust solution would deduct proportionally
                 flag_modified(found_army, "composition")
             else:
                 amount = found_army.troop_count
                 source_comp = found_army.composition.copy()
                 await self.session.delete(found_army)
 
+            # Pathfinding
             travel_mode = "sea_only" if pending_call.call_type == "SEA" else "land_only"
             journey = await PF_ENGINE.find_journey_async(
                 start_loc=start_coords,
@@ -149,9 +158,8 @@ class DiplomacyService:
 
             if journey:
                 dur = calculate_travel_duration(journey["terrain_breakdown"], amount)
-                arrival = datetime.datetime.now(
-                    datetime.timezone.utc
-                ) + datetime.timedelta(seconds=dur)
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                arrival = now_utc + datetime.timedelta(seconds=dur)
 
                 new_levy = Army(
                     game_id=game.game_id,
@@ -166,18 +174,41 @@ class DiplomacyService:
                     destination_y=target_coords[1],
                     status="SAILING" if travel_mode == "sea_only" else "MARCHING",
                     arrival_time=arrival,
-                    departure_time=datetime.datetime.now(datetime.timezone.utc),
+                    departure_time=now_utc,
                 )
                 self.session.add(new_levy)
                 await self.session.flush()
 
+                # Schedule arrival task
                 from app.tasks.light_tasks import resolve_army_arrival
 
                 new_levy.task_id = resolve_army_arrival.apply_async(
                     args=[new_levy.army_id], eta=arrival
                 ).id
+
+                # =================================================================
+                # THE FIX: Generate and append the Fog of War message
+                # =================================================================
+                direction = war_service.calculate_direction(start_coords, target_coords)
+                fog_msg = await war_service.get_fog_of_war_message(
+                    new_levy, game.game_id, start_coords, direction
+                )
+
+                # Apply the correct threshold based on army type
+                threshold = (
+                    SEA_FOG_OF_WAR_THRESHOLD
+                    if new_levy.army_type == "SEA"
+                    else FOG_OF_WAR_THRESHOLD
+                )
+                if new_levy.troop_count <= threshold:
+                    fog_msg = None
+
+                if fog_msg:
+                    fog_of_war_messages.append(fog_msg)
+                # =================================================================
+
                 march_results.append(
-                    f"✅ **{house_name}** (Levy) is moving to rally point. ETA: **{int(dur/3600)}h**."
+                    f"✅ **{house_name}** (Levy) is moving to rally point. ETA: **{format_duration(dur)}**."
                 )
             else:
                 march_results.append(
@@ -186,7 +217,9 @@ class DiplomacyService:
 
         pending_call.status = "COMPLETED"
         await self.session.commit()
-        return march_results
+
+        # Return both lists
+        return march_results, fog_of_war_messages
 
     async def prepare_banner_call(
         self, game_id, liege_discord_id=None, acting_house_id=None, is_gm_override=False
