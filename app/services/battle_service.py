@@ -881,7 +881,7 @@ class BattleService:
             defense_bonus_str.lower(), 0
         )
 
-        odds = 50 + ((att_bp + att_mar) - (def_bp + def_mar + def_bonus))
+        odds = 50 + ((att_bp + (att_mar / 3)) - (def_bp + (def_mar / 3) + def_bonus))
 
         new_battle = Battle(
             game_id=game_id,
