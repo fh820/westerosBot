@@ -341,22 +341,45 @@ def dispatch_scout_report(
         session.close()
 
 
-@celery_app.task
+@celery_app.task(bind=True)  # <-- Add bind=True
 def dispatch_gate_alert(
-    game_id: int, army_id: int, gate_name: str, gate_owner_house_id: int
+    self,  # <-- Add self
+    game_id: int,
+    army_id: int,
+    gate_name: str,
+    gate_owner_house_id: int,
 ):
     """
-    Halts army at a gate, SAVES their destination for resumption, and pings defender.
+    Halts army at a gate, SAVES their destination, and pings defender.
+    This version is IDEMPOTENT to prevent duplicate gate alerts.
     """
     session = get_sync_session()
     try:
-        # Load Army with House data
-        army = session.query(Army).options(selectinload(Army.house)).get(army_id)
+        # Start a transaction to ensure our lock is held until we are done.
+        session.begin()
 
-        # Validation: Check if army exists and is actually moving
-        # If it's already IDLE, the task might be a duplicate or stale
+        # Acquire an exclusive lock on the army row to prevent race conditions.
+        army = (
+            session.query(Army)
+            .filter_by(army_id=army_id)
+            .options(selectinload(Army.house).selectinload(House.game))
+            .with_for_update()  # The Lock
+            .first()
+        )
+
+        # THE CRITICAL IDEMPOTENCY CHECK:
+        # If a duplicate task runs, it will wait here. By the time it acquires
+        # the lock, the first task will have changed the status to "IDLE",
+        # causing this check to fail and preventing a duplicate alert.
         if not army or army.status not in ["MARCHING", "SAILING"]:
+            print(
+                f"Gate alert for Army {army_id} skipped: Army not found or already halted (Status: {army.status if army else 'N/A'})."
+            )
+            session.commit()  # End the transaction to release the lock.
+            session.close()
             return
+
+        # We have the lock and the army is moving. Proceed with the halt logic.
 
         # 1. Snap Location to the Gate Fief (Visual clarity)
         gate_fief = (
@@ -370,28 +393,23 @@ def dispatch_gate_alert(
                 gate_fief.location_y,
             )
 
-        # 2. CRITICAL FIX: Save the intended destination before wiping it.
-        # This is required for "Iterative Gate Alerts". When the gate opens,
-        # we will read these values to calculate the path to the NEXT gate/target.
+        # 2. Save the intended destination before wiping it.
         if army.destination_x is not None and army.destination_y is not None:
             army.original_destination_x = army.destination_x
             army.original_destination_y = army.destination_y
 
-        # 3. Halt the Army
+        # 3. Halt the Army (This is our state change that acts as a secondary lock)
         army.status = "IDLE"
 
-        # Revoke the Celery movement task so it doesn't trigger "arrival" later
+        # 4. Revoke the Celery movement task so it doesn't trigger "arrival" later
         if army.task_id:
             AsyncResult(army.task_id, app=celery_app).revoke(terminate=True)
 
-        # Clear active movement data
-        army.destination_x = None
-        army.destination_y = None
-        army.arrival_time = None
-        army.departure_time = None
-        army.task_id = None
+        # 5. Clear active movement data
+        army.destination_x, army.destination_y = None, None
+        army.arrival_time, army.departure_time, army.task_id = None, None, None
 
-        # 4. Find Defender's Locked Quarters for Notification
+        # 6. Find Defender for Notification
         defender = (
             session.query(User.discord_id, GamePlayer.private_channel_id, House.name)
             .join(GamePlayer, User.user_id == GamePlayer.user_id)
@@ -399,12 +417,12 @@ def dispatch_gate_alert(
             .where(
                 GamePlayer.claimed_house_id == gate_owner_house_id,
                 GamePlayer.game_id == game_id,
-                GamePlayer.is_primary == True,  # Ensure we target the main player
+                GamePlayer.is_primary == True,
             )
             .first()
         )
 
-        # 5. Dispatch Event to Redis (Cog will handle the Discord Embed)
+        # 7. Dispatch Event to Redis (This will now only run ONCE)
         payload = {
             "type": "GATE_ALERT",
             "guild_id": army.house.game.guild_id,
@@ -417,18 +435,22 @@ def dispatch_gate_alert(
             },
             "defender": {
                 "house_id": gate_owner_house_id,
-                "house_name": defender[2] if defender else "NPC",
-                "discord_id": defender[0] if defender else None,
-                "private_channel_id": defender[1] if defender else None,
+                "house_name": defender.name if defender else "NPC",
+                "discord_id": defender.discord_id if defender else None,
+                "private_channel_id": defender.private_channel_id if defender else None,
                 "is_npc": defender is None,
             },
         }
         REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
+
+        # All operations were successful. Commit changes to the DB and release the lock.
         session.commit()
 
     except Exception as e:
-        session.rollback()
+        session.rollback()  # On any error, undo all changes and release the lock.
         print(f"[ERROR] dispatch_gate_alert failed: {e}")
+        # It's safe to retry now because the entry check is idempotent.
+        raise self.retry(exc=e, countdown=60)
     finally:
         session.close()
 
