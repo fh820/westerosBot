@@ -20,6 +20,8 @@ UNIT_STATS = {
     "archers": {"value": 2.5},
     "militia": {"value": 1.0},
     "warships": {"value": 100.0},
+    "ships": {"value": 100.0},
+    "ship": {"value": 100.0},
 }
 
 # WINNERS: Lose more in close battles (0), lose very little in crushing victories (5)
@@ -137,14 +139,14 @@ class BattleService:
             )
         )
 
-        att_total = att_bp + att_martial + att_bonus
-        def_total = def_bp + def_martial + def_bonus
+        att_total = att_bp + (att_martial / 3.0) + att_bonus
+        def_total = def_bp + (def_martial / 3.0) + def_bonus
 
         odds = 50 + (att_total - def_total)
-        if attacker.troop_count > defender.troop_count * 1.1:
-            odds += 2
-        elif defender.troop_count > attacker.troop_count * 1.1:
-            odds -= 2
+        if attacker.troop_count > defender.troop_count * 1.2:
+            odds += 4
+        elif defender.troop_count > attacker.troop_count * 1.2:
+            odds -= 4
 
         # Momentum adjustment
         score_diff = battle.attacker_score - battle.defender_score
@@ -180,7 +182,8 @@ class BattleService:
             defender.house_id, defender.commander_name
         )
 
-        att_bonus, def_bonus = att_martial, def_martial
+        att_bonus = att_martial / 3.0
+        def_bonus = def_martial / 3.0
         if battle_type == "LAND_BATTLE":
             att_bonus += {"extreme": 15, "good": 10, "decent": 5, "failed": -5}.get(
                 ambush.lower(), 0
@@ -572,11 +575,11 @@ class BattleService:
                     commander_fate_str = f"**{loser.commander_name}** managed to disengage! The remaining {loser.troop_count} {unit_term} have scattered.\n⚠️ {loser_mention} **ORDERS REQUIRED:** Your host is now **RETREATING** and requires a new destination."
                 else:
                     is_destroyed = True
-                    fate_str = (
-                        "Captured"
-                        if random.randint(1, 100) <= 50
-                        else "Killed in Action"
-                    )
+                    fate_roll = random.randint(1, 100)
+                    if fate_roll >= 95:
+                        fate_str = "Killed in Action"
+                    else:
+                        fate_str = "Captured"
                     commander_fate_str = f"The retreat failed! **{loser.commander_name}** was **{fate_str}**! {loser_mention}, your host was lost."
             else:
                 is_destroyed = True

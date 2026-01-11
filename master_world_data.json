@@ -715,6 +715,14 @@
         "choke_point": null
     },
     {
+        "region": "Dorne",
+        "house": "Martell",
+        "castle": "Planky Town",
+        "liege": "Martell",
+        "x": 998,
+        "y": 2198
+    },
+    {
         "region": "Dothraki Sea",
         "house": "Dothraki",
         "castle": "Vaes Dothrak",
