@@ -2777,6 +2777,64 @@ class WarfareCog(commands.Cog):
             else:
                 await ctx.send(f"❌ **GM Reassignment Failed:** {msg}")
 
+    @gm_war.command(name="plan")
+    @commands.check(is_gm)
+    async def gm_plan(
+        self,
+        ctx,
+        army_id: int,
+        destination: str,
+        units: str = "all",
+        mode: str = "optimal",
+        *,
+        waypoints: str = None,
+    ):
+        """
+        GM: Simulate a journey to see the path/map without moving.
+        Usage: !gm_war plan [ArmyID] [Destination] [Units] [Mode] [Waypoints]
+        Example: !gm_war plan 1886 "King's Landing" all optimal
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            service = WarfareService(session)
+
+            # Call the existing planning logic
+            success, result = await service.plan_journey(
+                game_id=game.game_id,
+                source_army_id=army_id,
+                dest_name=destination,
+                units_input=units,
+                travel_mode_req=mode.lower(),  # 'land_only', 'sea_only', or 'optimal'
+                waypoints=waypoints,
+            )
+
+            if success:
+                embed = discord.Embed(
+                    title=f"🗺️ Journey Plan: {result['origin']} ➜ {result['destination']}",
+                    description=f"**Mode:** {result['mode'].title()}",
+                    color=discord.Color.blue(),
+                )
+                embed.add_field(name="Est. Time", value=result["time"], inline=True)
+                embed.add_field(
+                    name="Distance", value=f"~{result['distance']} miles", inline=True
+                )
+                embed.add_field(
+                    name="Army Size", value=f"{result['army_size']} troops", inline=True
+                )
+
+                if result.get("image"):
+                    image_file = discord.File(result["image"], filename="plan.png")
+                    embed.set_image(url="attachment://plan.png")
+                    await ctx.send(file=image_file, embed=embed)
+                    result["image"].close()
+                else:
+                    await ctx.send(embed=embed)
+            else:
+                await ctx.send(f"❌ Planning Failed: {result}")
+
 
 async def setup(bot):
     await bot.add_cog(WarfareCog(bot))
