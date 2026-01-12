@@ -142,12 +142,15 @@ class BattleService:
         att_total = att_bp + (att_martial / 3.0) + att_bonus
         def_total = def_bp + (def_martial / 3.0) + def_bonus
 
-        odds = 50 + (att_total - def_total)
         if attacker.troop_count > defender.troop_count * 1.2:
-            odds += 4
+            att_total += 4
         elif defender.troop_count > attacker.troop_count * 1.2:
-            odds -= 4
+            def_total += 4
 
+        if att_total + def_total == 0:
+            odds = 50
+        else:
+            odds = (att_total / (att_total + def_total)) * 100
         # Momentum adjustment
         score_diff = battle.attacker_score - battle.defender_score
         odds += score_diff * 5
@@ -197,7 +200,16 @@ class BattleService:
         elif defender.troop_count > attacker.troop_count * 1.2:
             def_bonus += 4
 
-        odds = int(max(1, min(99, 50 + ((att_bp + att_bonus) - (def_bp + def_bonus)))))
+        att_total = att_bp + att_bonus
+        def_total = def_bp + def_bonus
+
+        # To avoid division by zero error if both armies have 0 power
+        if att_total + def_total == 0:
+            odds = 50
+        else:
+            odds = (att_total / (att_total + def_total)) * 100
+
+        odds = int(max(1, min(99, odds)))  # Keep the 1-99 clamp
 
         new_battle = Battle(
             game_id=game_id,
