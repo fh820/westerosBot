@@ -53,6 +53,35 @@ class BattleService:
     # ===== SHARED HELPERS ===============================================
     # ====================================================================
 
+    def _scale_composition(self, army, new_total_count: int):
+        """
+        Updates army.composition to match a new (lower) total troop_count.
+        """
+        current_total = sum(army.composition.values())
+        if current_total <= 0 or new_total_count <= 0:
+            army.composition = {}
+            return
+
+        ratio = new_total_count / current_total
+        new_comp = {}
+        running_sum = 0
+
+        # Scale each unit type
+        for unit, count in army.composition.items():
+            new_val = int(count * ratio)
+            new_comp[unit] = new_val
+            running_sum += new_val
+
+        # Fix rounding errors (add remainder to the largest group, usually infantry)
+        remainder = new_total_count - running_sum
+        if remainder > 0:
+            # Find the unit type with the most troops to dump the remainder into
+            largest_unit = max(new_comp, key=new_comp.get) if new_comp else "infantry"
+            new_comp[largest_unit] = new_comp.get(largest_unit, 0) + remainder
+
+        army.composition = new_comp
+        flag_modified(army, "composition")
+
     def _calculate_army_bp(self, army):
         if not army or not army.composition:
             return 0, 0
@@ -545,6 +574,7 @@ class BattleService:
                     flag_modified(army, "cargo")
 
             army.troop_count -= units_lost
+            self._scale_composition(army, army.troop_count)
             return units_lost
 
         # Execute the rout
@@ -809,6 +839,8 @@ class BattleService:
         def_losses = int(defender_army.troop_count * def_loss_pct)
         attacker_army.troop_count = max(0, attacker_army.troop_count - att_losses)
         defender_army.troop_count = max(0, defender_army.troop_count - def_losses)
+        self._scale_composition(attacker_army, attacker_army.troop_count)
+        self._scale_composition(defender_army, defender_army.troop_count)
 
         def apply_cargo_damage(army, loss_pct):
             if (
