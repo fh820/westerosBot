@@ -759,12 +759,8 @@ class BattleService:
             return None, "Armies not found.", None
 
         battle_type = "LAND_BATTLE"
-        att_martial = await self._get_character_martial(
-            attacker.house_id, attacker.commander_name
-        )
-        def_martial = await self._get_character_martial(
-            defender.house_id, defender.commander_name
-        )
+        att_martial = await self._get_army_martial(attacker)
+        def_martial = await self._get_army_martial(defender)
         _, att_bp = self._calculate_army_bp(attacker)
         _, def_bp = self._calculate_army_bp(defender)
 
@@ -935,12 +931,8 @@ class BattleService:
 
         _, att_bp = self._calculate_army_bp(attacker)
         _, def_bp = self._calculate_army_bp(defender)
-        att_mar = await self._get_character_martial(
-            attacker.house_id, attacker.commander_name
-        )
-        def_mar = await self._get_character_martial(
-            defender.house_id, defender.commander_name
-        )
+        att_mar = await self._get_army_martial(attacker)
+        def_mar = await self._get_army_martial(defender)
         def_bonus = {"major": 20, "significant": 10, "minor": 5, "siege_camp": 3}.get(
             defense_bonus_str.lower(), 0
         )
