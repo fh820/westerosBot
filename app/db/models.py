@@ -321,6 +321,7 @@ class Army(Base):
     # --- ADD THESE NEW COLUMNS ---
     original_destination_x: Mapped[float | None] = mapped_column(Float, nullable=True)
     original_destination_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    commander_martial = Column(Integer, nullable=True)
 
 
 class MarchLog(Base):

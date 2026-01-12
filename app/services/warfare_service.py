@@ -3664,3 +3664,22 @@ class WarfareService:
 
             traceback.print_exc()
             return False, f"An unexpected error occurred: {e}"
+
+    async def set_army_commander(self, army_id: int, name: str, martial: int):
+        """
+        GM Tool: Assigns a specific commander name and martial score to an army.
+        This overrides the default Player Martial score.
+        """
+        army = await self.session.get(Army, army_id)
+        if not army:
+            return False, f"❌ Army ID {army_id} not found."
+
+        army.commander_name = name
+        army.commander_martial = martial
+
+        await self.session.commit()
+
+        return (
+            True,
+            f"✅ Army **{army_id}** is now commanded by **{name}** (Martial: {martial}).",
+        )

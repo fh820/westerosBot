@@ -53,6 +53,36 @@ class BattleService:
     # ===== SHARED HELPERS ===============================================
     # ====================================================================
 
+    async def _get_army_martial(self, army: Army) -> int:
+        """
+        Determines the martial score for an army based on hierarchy:
+        1. Specific GM Override (commander_martial on Army table)
+        2. The Player's active character stats (if player owned)
+        3. 0 (Default NPC)
+        """
+        # 1. Check for GM Override / Specific Commander Stat
+        if army.commander_martial is not None:
+            return army.commander_martial
+
+        # 2. Check for Player Owner
+        # We need to fetch the GamePlayer linked to this House
+        stmt = (
+            select(GamePlayer)
+            .where(
+                GamePlayer.game_id == army.game_id,
+                GamePlayer.claimed_house_id == army.house_id,
+                GamePlayer.is_primary == True,
+            )
+            .options(selectinload(GamePlayer.character))
+        )
+        player = (await self.session.execute(stmt)).scalars().first()
+
+        if player and player.character:
+            return player.character.skills.get("martial", 0)
+
+        # 3. Default
+        return 0
+
     def _scale_composition(self, army, new_total_count: int):
         """
         Updates army.composition to match a new (lower) total troop_count.
@@ -156,16 +186,12 @@ class BattleService:
         att_martial = (
             att_cmd_override
             if att_cmd_override is not None
-            else await self._get_character_martial(
-                attacker.house_id, attacker.commander_name
-            )
+            else await self._get_army_martial(attacker)
         )
         def_martial = (
             def_cmd_override
             if def_cmd_override is not None
-            else await self._get_character_martial(
-                defender.house_id, defender.commander_name
-            )
+            else await self._get_army_martial(defender)
         )
 
         att_total = att_bp + (att_martial / 3.0) + att_bonus
@@ -207,12 +233,8 @@ class BattleService:
         _, att_bp = self._calculate_army_bp(attacker)
         _, def_bp = self._calculate_army_bp(defender)
 
-        att_martial = await self._get_character_martial(
-            attacker.house_id, attacker.commander_name
-        )
-        def_martial = await self._get_character_martial(
-            defender.house_id, defender.commander_name
-        )
+        att_martial = await self._get_army_martial(attacker)
+        def_martial = await self._get_army_martial(defender)
 
         att_bonus = att_martial / 3.0
         def_bonus = def_martial / 3.0
@@ -605,9 +627,7 @@ class BattleService:
             commander_fate_str = f"The garrison of **{battle.fief.name}** was overrun! Survivors were put to the sword or captured."
         else:
             if loser.troop_count > 0:
-                loser_martial = await self._get_character_martial(
-                    loser.house_id, loser.commander_name
-                )
+                loser_martial = await self._get_army_martial(loser)
                 retreat_odds = 40 + (loser_martial * 2)
 
                 if random.randint(1, 100) <= retreat_odds:

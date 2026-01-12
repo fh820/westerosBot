@@ -2835,6 +2835,19 @@ class WarfareCog(commands.Cog):
             else:
                 await ctx.send(f"❌ Planning Failed: {result}")
 
+    @gm_war.command(name="set_commander")
+    @commands.check(is_gm)
+    async def gm_set_commander(self, ctx, army_id: int, martial: int, *, name: str):
+        """
+        GM: Set a specific commander and martial score for an army.
+        Usage: !gm_war set_commander [ArmyID] [MartialScore] [Name]
+        Example: !gm_war set_commander 123 25 "Ser Barristan Selmy"
+        """
+        async with get_session() as session:
+            service = WarfareService(session)
+            success, msg = await service.set_army_commander(army_id, name, martial)
+            await ctx.send(msg)
+
 
 async def setup(bot):
     await bot.add_cog(WarfareCog(bot))
