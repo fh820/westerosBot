@@ -382,6 +382,7 @@ class Battle(Base):
     # Relationships
     fief = relationship("Fief")
     game = relationship("Game")
+    winner_id = Column(Integer, nullable=True)
 
 
 class PendingInteraction(Base):
