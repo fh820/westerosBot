@@ -764,7 +764,7 @@ class BattleService:
         _, att_bp = self._calculate_army_bp(attacker)
         _, def_bp = self._calculate_army_bp(defender)
 
-        att_bonus, def_bonus = att_martial, def_martial
+        att_bonus, def_bonus = att_martial / 3.0, def_martial / 3.0
         if attacker.troop_count > defender.troop_count * 1.2:
             att_bonus += 4
         elif defender.troop_count > attacker.troop_count * 1.2:
