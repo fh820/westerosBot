@@ -99,7 +99,7 @@ class GameplayCog(commands.Cog):
 
                 if data["is_primary_player_house"] or is_gm_view:
                     embed.add_field(
-                        name="House Treasury",
+                        name="Total Wealth",
                         value=f"{data['treasury']} Gold",
                         inline=True,
                     )
@@ -437,6 +437,12 @@ class GameplayCog(commands.Cog):
             character = game_player.character or (
                 house.characters[0] if house.characters else None
             )
+            fief_gold_total = sum((f.treasury or 0) for f in house.fiefs)
+            army_gold_total = sum((a.treasury or 0) for a in house.armies)
+            # house.treasury might still have gold from trade deals or recent transfers before they are moved to fiefs
+            total_house_wealth = (
+                (house.treasury or 0) + fief_gold_total + army_gold_total
+            )
 
             # --- DATA PREPARATION (Updated for Fief/Army Gold) ---
             data = {
@@ -445,7 +451,7 @@ class GameplayCog(commands.Cog):
                 "name": character.name if character else "N/A",
                 "parent_house": house.liege.name if house.liege else None,
                 "color": house.color_hex,
-                "treasury": house.treasury,
+                "treasury": total_house_wealth,
                 "income": "N/A",
                 "manpower": house.manpower,
                 "manpower_cap": house.manpower_cap,
