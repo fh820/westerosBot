@@ -983,7 +983,7 @@ class WarfareService:
                     print(
                         f"[DEBUG] Ignored collision with Army {col['enemy_id']} due to Retreat status."
                     )
-        collisions = filtered_collisions
+            collisions = filtered_collisions
         # 1. Filter for valid LAND enemies only
         unique_enemy_ids = {c["enemy_id"] for c in collisions}
         valid_land_ids = set()
