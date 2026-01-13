@@ -35,41 +35,99 @@ class EconomyService:
         return army, gold, name
 
     async def execute_transfer(
-        self, source_house_id: int, target_category: str, target_id: int, amount: int
+        self,
+        source_house_id: int,
+        target_category: str,
+        target_id: int,
+        amount: int,
+        source_fief_id: int = None,
     ):
-        source = await self.session.get(House, source_house_id)
-        if not source or source.treasury < amount:
-            return False, "❌ Source House not found or insufficient funds."
+        """
+        Executes a gold transfer.
+        - Deducts from a specific Fief (or the Source House's capital).
+        - Adds to an Army, specific Fief, or Target House's capital.
+        """
+        # 1. Determine Source of Funds (Fief Treasury)
+        source_fief = None
 
-        target_obj = None
+        if source_fief_id:
+            source_fief = await self.session.get(Fief, source_fief_id)
+        else:
+            # Fallback: Find the Capital (First Fief) of the source house
+            stmt = (
+                select(Fief)
+                .where(Fief.owner_id == source_house_id)
+                .order_by(Fief.fief_id.asc())
+                .limit(1)
+            )
+            source_fief = (await self.session.execute(stmt)).scalars().first()
+
+        if not source_fief:
+            return False, "❌ Source Fief not found or House has no lands."
+
+        # Check Balance
+        current_gold = source_fief.treasury or 0
+        if current_gold < amount:
+            return (
+                False,
+                f"❌ Insufficient funds in **{source_fief.name}**. Available: {current_gold}.",
+            )
+
+        # 2. Determine Target Destination
         target_name = "Unknown"
+        target_found = False
 
         if target_category == "ARMY":
             target_obj = await self.session.get(Army, target_id)
             if target_obj:
                 target_obj.treasury = (target_obj.treasury or 0) + amount
                 target_name = target_obj.commander_name
-        elif target_category == "HOUSE":
-            target_obj = await self.session.get(House, target_id)
+                target_found = True
+
+        elif target_category == "FIEF":
+            target_obj = await self.session.get(Fief, target_id)
             if target_obj:
-                target_obj.treasury += amount
+                target_obj.treasury = (target_obj.treasury or 0) + amount
                 target_name = target_obj.name
+                target_found = True
 
-        if not target_obj:
-            return False, "❌ Target not found."
+        elif target_category == "HOUSE":
+            # Deposit into Target House's Capital
+            stmt = (
+                select(Fief)
+                .where(Fief.owner_id == target_id)
+                .order_by(Fief.fief_id.asc())
+                .limit(1)
+            )
+            target_fief = (await self.session.execute(stmt)).scalars().first()
+            if target_fief:
+                target_fief.treasury = (target_fief.treasury or 0) + amount
+                target_name = f"{target_fief.name} (Capital)"
+                target_found = True
+            else:
+                return False, "❌ Target House has no lands to receive gold."
 
-        source.treasury -= amount
+        if not target_found:
+            return False, "❌ Target destination not found."
+
+        # 3. Execute Deduction
+        source_fief.treasury -= amount
+
         await self.session.commit()
         return (
             True,
-            f"✅ Transferred **{amount} Gold** from **{source.name}** to **{target_name}**.",
+            f"✅ Transferred **{amount} Gold** from **{source_fief.name}** to **{target_name}**.",
         )
 
     async def run_fiscal_year(self, game_id: int) -> list[str]:
         """
-        Calculates fiscal year, applying income modifiers and checking for feudal loops.
+        Calculates fiscal year.
+        1. Fiefs generate income locally.
+        2. Taxes are paid to Liege.
+           - Logic: House Treasury -> Fief Treasuries -> Army Treasuries.
+           - If total liquid cash < tax, payment fails.
         """
-        # 1. Load Data (Game, Houses, Players)
+        # 1. Load Data
         game = await self.session.get(Game, game_id)
         if not game:
             return ["❌ Game not found."]
@@ -79,16 +137,19 @@ class EconomyService:
         mod_regions = income_mods.get("regions", {})
         mod_houses = income_mods.get("houses", {})
 
+        # UPDATE: We must load Armies now to check their gold for taxes
         stmt_houses = (
             select(House)
             .where(House.game_id == game_id)
-            .options(selectinload(House.fiefs))
+            .options(
+                selectinload(House.fiefs), selectinload(House.armies)  # <--- ADDED THIS
+            )
         )
         houses = (await self.session.execute(stmt_houses)).scalars().all()
         house_map = {h.house_id: h for h in houses}
 
         # =========================================================
-        # 🕵️ PRE-FLIGHT CYCLE DETECTION (Kept from Debug Version)
+        # 🕵️ PRE-FLIGHT CYCLE DETECTION
         # =========================================================
         detected_cycles = []
         for h in houses:
@@ -107,14 +168,7 @@ class EconomyService:
                     detected_cycles.append(" -> ".join(path_names))
                     break
         if detected_cycles:
-            unique_cycles = list(set(detected_cycles))
-            error_msg = "❌ **CRITICAL DATA ERROR: FEUDAL LOOPS DETECTED**\n..."
-            for cycle in unique_cycles[:10]:
-                error_msg += f"🔸 {cycle}\n"
-            error_msg += (
-                "\n**Solution:** Use SQL to fix the `liege_id` of one of these houses."
-            )
-            return [error_msg]
+            return [f"❌ **CRITICAL DATA ERROR: FEUDAL LOOPS**\n{detected_cycles[0]}"]
         # =========================================================
 
         stmt_players = (
@@ -140,52 +194,54 @@ class EconomyService:
 
         yearly_revenue = {h.house_id: 0 for h in houses}
         regional_reports = {}
-        modifier_reports = {}  # To track which modifiers were applied
+        modifier_reports = {}
 
-        # 2. STEP ONE: Fief Income & Manpower Regen
+        # 2. STEP ONE: Fief Income Generation (Local)
         for house in houses:
-            # Manpower calculation (unchanged)
+            # Manpower (Global to House)
             active_fiefs = [f for f in house.fiefs if not f.is_ruined]
             if active_fiefs:
                 m_cap = sum(f.base_manpower for f in active_fiefs)
                 region = active_fiefs[0].region or "The Crownlands"
-                # You might need to define REPOPULATION_RATES somewhere
                 rate = getattr(self, "REPOPULATION_RATES", {}).get(region, 0.02)
                 house.manpower_cap = m_cap
                 house.manpower = min(m_cap, house.manpower + int(m_cap * rate))
 
-            # Base Income calculation (WITH MODIFIERS)
-            fief_income = 0
+            # Gold (Local to Fief)
+            house_total_gross_income = 0
+
             for f in house.fiefs:
                 if not f.is_ruined:
-                    # --- NEW LOGIC: APPLY MODIFIER ---
-                    # Precedence: House > Region > Global
+                    # Apply Modifiers
                     modifier = mod_global
                     if f.region in mod_regions:
                         modifier = mod_regions[f.region]
-                    if str(house.house_id) in mod_houses:  # JSON keys must be strings
+                    if str(house.house_id) in mod_houses:
                         modifier = mod_houses[str(house.house_id)]
 
-                    # Apply the modifier and add to income
+                    # Calculate
                     modified_income = int(f.base_income * f.integration * modifier)
-                    fief_income += modified_income
 
-                    # Track for report if a modifier was used
-                    if modifier != 1.0:
-                        if f.region not in modifier_reports:
-                            modifier_reports[f.region] = []
-                        modifier_reports[f.region].append(
-                            f"  - *{house.name} income modified by {modifier*100:.0f}%*"
-                        )
-                    # --- END NEW LOGIC ---
+                    # Deposit directly into FIEF Treasury
+                    f.treasury = (f.treasury or 0) + modified_income
 
+                    house_total_gross_income += modified_income
+
+                    # Integration recovery
                     if f.integration < 1.0:
                         f.integration = min(1.0, f.integration + 0.20)
 
-            house.treasury += fief_income
-            yearly_revenue[house.house_id] = fief_income
+                    if modifier != 1.0 and f.region not in modifier_reports:
+                        if f.region not in modifier_reports:
+                            modifier_reports[f.region] = []
+                        modifier_reports[f.region].append(
+                            f"  - *{house.name} income {modifier*100:.0f}%*"
+                        )
 
-        # 3. STEP TWO: Tax Flow (Bottom-Up Logic)
+            # Store total revenue to calculate tax obligation
+            yearly_revenue[house.house_id] = house_total_gross_income
+
+        # 3. STEP TWO: Tax Flow (Scavenge Logic)
         def get_feudal_depth(h, depth=0):
             if not h.liege_id or h.liege_id not in house_map:
                 return depth
@@ -209,43 +265,84 @@ class EconomyService:
                 regional_reports[region_name] = []
 
             if tax_amount > 0:
-                if house.treasury >= tax_amount:
-                    house.treasury -= tax_amount
+                # --- SCAVENGE LOGIC START ---
+                # Check if we have enough money globally before deducting anything
+
+                liquid_house = house.treasury or 0
+                liquid_fiefs = sum(f.treasury or 0 for f in house.fiefs)
+                liquid_armies = sum(a.treasury or 0 for a in house.armies)
+
+                total_liquid = liquid_house + liquid_fiefs + liquid_armies
+
+                if total_liquid >= tax_amount:
+                    remaining_to_pay = tax_amount
+
+                    # 1. Drain House Treasury
+                    take = min(liquid_house, remaining_to_pay)
+                    house.treasury -= take
+                    remaining_to_pay -= take
+
+                    # 2. Drain Fiefs (Richest First)
+                    if remaining_to_pay > 0:
+                        rich_fiefs = sorted(
+                            house.fiefs, key=lambda x: x.treasury or 0, reverse=True
+                        )
+                        for f in rich_fiefs:
+                            if remaining_to_pay <= 0:
+                                break
+                            available = f.treasury or 0
+                            take = min(available, remaining_to_pay)
+                            f.treasury -= take
+                            remaining_to_pay -= take
+
+                    # 3. Drain Armies (Richest First)
+                    if remaining_to_pay > 0:
+                        rich_armies = sorted(
+                            house.armies, key=lambda x: x.treasury or 0, reverse=True
+                        )
+                        for a in rich_armies:
+                            if remaining_to_pay <= 0:
+                                break
+                            available = a.treasury or 0
+                            take = min(available, remaining_to_pay)
+                            a.treasury -= take
+                            remaining_to_pay -= take
+
+                    # Pay the Liege (Direct to House Treasury)
                     liege.treasury += tax_amount
                     yearly_revenue[
                         liege.house_id
-                    ] += tax_amount  # Liege's income for THEIR taxes
+                    ] += tax_amount  # Adds to liege's gross for next loop calculation
+
                     regional_reports[region_name].append(
                         f"  💸 {get_report_name(house)} ➔ {get_report_name(liege)}: `{tax_amount}g`"
                     )
                 else:
+                    # Failed to pay
+                    shortfall = tax_amount - total_liquid
                     regional_reports[region_name].append(
-                        f"  ⚠️ {get_report_name(house)}: **In Arrears** (Cannot pay {get_report_name(liege)})"
+                        f"  ⚠️ {get_report_name(house)}: **In Arrears** (Short by {shortfall}g)"
                     )
+                # --- SCAVENGE LOGIC END ---
 
         await self.session.commit()
 
         # 4. Build Report
-        header = "## 📜 Royal Fiscal Report\n*Taxes collected and integration restored.*\n━━━━━━━━━━━━━━━━━━\n"
+        header = "## 📜 Royal Fiscal Report\n*Income distributed to Fiefs. Taxes collected from all sources.*\n━━━━━━━━━━━━━━━━━━\n"
         if not regional_reports and not modifier_reports:
             return [header + "\n*No economic activity to report this year.*"]
 
         content_lines = []
-        # Combine tax and modifier reports for a clean output
         all_regions = sorted(
             set(regional_reports.keys()) | set(modifier_reports.keys())
         )
 
         for region in all_regions:
             content_lines.append(f"### 🚩 {region.upper()}")
-            # Add tax lines first
             if region in regional_reports:
                 content_lines.extend(regional_reports[region])
-            # Add modifier notes after
             if region in modifier_reports:
-                content_lines.extend(
-                    list(set(modifier_reports[region]))
-                )  # Use set to avoid duplicate notes
+                content_lines.extend(list(set(modifier_reports[region])))
             content_lines.append("")
 
         # 5. Pagination

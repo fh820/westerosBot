@@ -218,6 +218,7 @@ class Fief(Base):
     owner = relationship("House", back_populates="fiefs")
     integration = Column(Float, default=1.0)
     base_manpower = Column(Integer, default=0)
+    treasury = Column(BigInteger, default=0)
 
 
 class Character(Base):

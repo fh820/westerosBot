@@ -1001,11 +1001,10 @@ class BattleService:
                 await self.session.commit()
                 return (False, "Attacker or Fief data missing from battle record.")
 
+            loot = fief.treasury or 0
             victim_house = await self.session.get(House, fief.owner_id)
-            if winner.house:
-                winner.house.treasury += victim_house.treasury if victim_house else 0
-            if victim_house:
-                victim_house.treasury = 0
+            winner.treasury = (winner.treasury or 0) + loot
+            fief.treasury = 0
 
             fief.owner_id = winner.house_id
             fief.integration = 0.10
@@ -1110,6 +1109,11 @@ class BattleService:
     async def occupy_fief(
         self, game_id, user_id, army_id, is_gm_override=False, acting_house_id=None
     ):
+        """
+        Allows an army to instantly capture a Fief if it is undefended.
+        UPDATED: Uses Fief Treasury logic and fixes asset loop indentation.
+        """
+        # 1. Validation
         army = await ArmyRepo.get_army_by_id(self.session, army_id)
         if not army:
             return False, "❌ Army not found."
@@ -1132,22 +1136,25 @@ class BattleService:
         if army.army_type != "LAND":
             return False, "❌ Land armies only."
 
+        # 2. Check Location
         stmt_fief = select(Fief).where(
             Fief.game_id == game_id,
             Fief.location_x == army.location_x,
             Fief.location_y == army.location_y,
         )
         fief = (await self.session.execute(stmt_fief)).scalars().first()
+
         if not fief:
-            return False, "❌ No Fief here."
+            return False, "❌ There is no Fief at this location."
 
         if fief.owner_id == effective_commanding_house_id:
             army.status = "GARRISONED"
             army.commander_name = f"Garrison of {fief.name}"
             self._stop_movement_immediately(army)
             await self.session.commit()
-            return True, f"✅ Garrisoned in {fief.name}."
+            return True, f"✅ **{army.commander_name}** has garrisoned {fief.name}."
 
+        # 3. Check for Defenders
         stmt_def = select(Army).where(
             Army.house_id == fief.owner_id,
             Army.location_x == fief.location_x,
@@ -1159,24 +1166,36 @@ class BattleService:
         if defender:
             return False, f"❌ Defended! Use siege."
 
-        victim_house = await self.session.get(House, fief.owner_id)
-        attacker_house = await self.session.get(House, effective_commanding_house_id)
-        loot = victim_house.treasury if victim_house else 0
-        if attacker_house:
-            attacker_house.treasury += loot
-        if victim_house:
-            victim_house.treasury = 0
+        # 4. EXECUTE CONQUEST
 
+        # --- LOOT LOGIC (Fief -> Army) ---
+        loot = fief.treasury or 0
+
+        # Add to the Army's "Wallet"
+        army.treasury = (army.treasury or 0) + loot
+
+        # Empty the Fief
+        fief.treasury = 0
+        # ---------------------------------
+
+        # Save old owner ID to find their assets later
+        old_owner_id = fief.owner_id
+
+        # Transfer Fief
         fief.owner_id = effective_commanding_house_id
         fief.integration = 0.10
+
+        # Garrison Attacker
         army.status = "GARRISONED"
         army.commander_name = f"Garrison of {fief.name}"
         self._stop_movement_immediately(army)
 
+        # 5. Asset Seizure
         stmt_assets = select(Army).where(
-            Army.house_id == victim_house.house_id if victim_house else -1,
+            Army.house_id == old_owner_id,
             Army.location_x == fief.location_x,
             Army.location_y == fief.location_y,
+            Army.army_id != army.army_id,
         )
         assets = (await self.session.execute(stmt_assets)).scalars().all()
 
@@ -1186,12 +1205,20 @@ class BattleService:
             if asset.army_type == "SEA":
                 asset.status = "DOCKED"
                 asset.commander_name = f"Captured Fleet ({asset.troop_count})"
-                captured_text += f"\n⚓ Captured {asset.troop_count} Ships"
+                captured_text += f"\n⚓ **Captured Fleet:** {asset.troop_count} Ships"
             else:
                 asset.status = "GARRISONED"
                 asset.commander_name = f"Captured Garrison ({asset.troop_count})"
-                captured_text += f"\n🏳️ Captured {asset.troop_count} Troops"
+                captured_text += f"\n🏳️ **Captured Army:** {asset.troop_count} Troops"
+
+            # FIX: Indented INSIDE the loop
             self._stop_movement_immediately(asset)
 
         await self.session.commit()
-        return True, f"🏰 **{fief.name} Occupied!**\n💰 Loot: {loot}\n{captured_text}"
+
+        return True, (
+            f"🏰 **{fief.name} Occupied!**\n"
+            f"Since there was no garrison, your forces marched right in.\n"
+            f"💰 **Loot Seized:** {loot} Gold (Added to Army)\n"
+            f"📉 Integration reset to **10%**.{captured_text}"
+        )

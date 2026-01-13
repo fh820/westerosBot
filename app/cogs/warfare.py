@@ -1503,6 +1503,7 @@ class WarfareCog(commands.Cog):
     async def army_details(self, ctx):
         """
         Detailed military report, paginated for large forces.
+        UPDATED: Displays Army Treasury.
         """
         discord_id = ctx.author.id
         async with get_session() as session:
@@ -1548,6 +1549,7 @@ class WarfareCog(commands.Cog):
                 )
 
                 for army in chunk:
+                    # Filter out future movements (ghost armies)
                     if army.departure_time:
                         dep_time = army.departure_time
                         if dep_time.tzinfo is None:
@@ -1556,6 +1558,7 @@ class WarfareCog(commands.Cog):
                         if dep_time > now:
                             continue
 
+                    # Calculate ETA string
                     if army.status in ["MARCHING", "SAILING"]:
                         if army.arrival_time:
                             arr_time = army.arrival_time
@@ -1581,6 +1584,7 @@ class WarfareCog(commands.Cog):
                     else:
                         status_str = f"🟢 {army.status}"
 
+                    # Format Composition
                     comp_items = []
                     if army.composition:
                         for k, v in army.composition.items():
@@ -1601,6 +1605,7 @@ class WarfareCog(commands.Cog):
 
                     loc_str = f"{army.location_x:.0f}, {army.location_y:.0f}"
 
+                    # Handle Cargo
                     cargo_str = ""
                     if army.army_type == "SEA":
                         count_label = "Ships"
@@ -1621,9 +1626,16 @@ class WarfareCog(commands.Cog):
                     else:
                         count_label = "Troops"
 
+                    # --- ADDED: Gold Display ---
+                    gold_str = ""
+                    if army.treasury and army.treasury > 0:
+                        gold_str = f" | 💰 {army.treasury}g"
+                    # ---------------------------
+
                     embed.add_field(
                         name=f"{army.commander_name} (ID: {army.army_id})",
-                        value=f"**Status:** {status_str}\n**{count_label}:** {army.troop_count}{cargo_str}\n**Comp:** {comp_str}\n**Location:** {loc_str}",
+                        # Added gold_str to the count line
+                        value=f"**Status:** {status_str}\n**{count_label}:** {army.troop_count}{cargo_str}{gold_str}\n**Comp:** {comp_str}\n**Location:** {loc_str}",
                         inline=False,
                     )
 

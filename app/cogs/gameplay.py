@@ -24,9 +24,8 @@ class GameplayCog(commands.Cog):
     ):
         """
         A centralized helper to render the detailed, paginated dashboard for a single house.
-        UPDATED: Smaller chunk size (6) to prevent Discord 1024 char limit errors.
         """
-        # 1. Ghost Army Filter
+        # 1. Ghost Army Filter (Unchanged)
         raw_armies = data.get("armies", [])
         async with get_session() as session:
             if raw_armies:
@@ -49,19 +48,15 @@ class GameplayCog(commands.Cog):
                             ids_to_hide.add(a_id)
                 data["armies"] = [a for a in raw_armies if a["id"] not in ids_to_hide]
 
-        # 2. Sort Armies: Moving first, then by size
-        # Status priority: MARCHING/SAILING -> DOCKED/GARRISONED -> IDLE
+        # 2. Sort Armies (Unchanged)
         def sort_key(a):
             moving = 0 if a["status"] in ["MARCHING", "SAILING"] else 1
-            return (moving, -a["count"])  # Negative count for descending sort
+            return (moving, -a["count"])
 
         armies = sorted(data.get("armies", []), key=sort_key)
 
         # 3. Build Paginated Embeds
         color_val = int(data["color"].lstrip("#"), 16)
-
-        # CRITICAL FIX: Reduced Chunk Size from 10 to 6
-        # Discord Field Limit is 1024 chars. 10 armies overflow this.
         CHUNK_SIZE = 6
         army_chunks = (
             [armies[i : i + CHUNK_SIZE] for i in range(0, len(armies), CHUNK_SIZE)]
@@ -84,7 +79,6 @@ class GameplayCog(commands.Cog):
                 author_name = f"Scion of House {data['parent_house']}"
             embed.set_author(name=author_name)
 
-            # Footer for pages
             if total_pages > 1:
                 embed.set_footer(text=f"Page {i+1} of {total_pages}")
 
@@ -105,7 +99,9 @@ class GameplayCog(commands.Cog):
 
                 if data["is_primary_player_house"] or is_gm_view:
                     embed.add_field(
-                        name="Treasury", value=f"{data['treasury']} Gold", inline=True
+                        name="House Treasury",
+                        value=f"{data['treasury']} Gold",
+                        inline=True,
                     )
                     embed.add_field(
                         name="Income", value=f"+{data['income']} / year", inline=True
@@ -116,12 +112,36 @@ class GameplayCog(commands.Cog):
                         inline=True,
                     )
 
+                # UPDATE 1: Display Fief Treasury
                 if data["fiefs"]:
-                    fief_str = ", ".join(data["fiefs"])
+                    # Create a list like: "Winterfell (500g)", "Moat Cailin (0g)"
+                    fief_list = []
+                    total_fief_gold = 0
+                    for f in data["fiefs"]:
+                        # Handle case where 'fiefs' is a list of dicts (from new code) or strings (old code fallback)
+                        if isinstance(f, dict):
+                            f_name = f["name"]
+                            f_gold = f["gold"]
+                        else:
+                            f_name = str(f)
+                            f_gold = 0  # Default if data unavailable
+
+                        entry_str = f"{f_name}"
+                        if f_gold > 0:
+                            entry_str += f" (**{f_gold}g**)"
+                            total_fief_gold += f_gold
+                        fief_list.append(entry_str)
+
+                    fief_str = ", ".join(fief_list)
                     if len(fief_str) > 1000:
                         fief_str = fief_str[:1000] + "..."
+
+                    header = f"Lands ({len(data['fiefs'])})"
+                    if total_fief_gold > 0:
+                        header += f" | Local Vaults: {total_fief_gold}g"
+
                     embed.add_field(
-                        name=f"Lands ({len(data['fiefs'])})",
+                        name=header,
                         value=fief_str,
                         inline=False,
                     )
@@ -151,7 +171,6 @@ class GameplayCog(commands.Cog):
                     cargo_ind = " 📦" if army.get("cargo_count", 0) > 0 else ""
                     unit_noun = "Ships" if army.get("type") == "SEA" else "Troops"
 
-                    # Compression for Composition to save space
                     comp_items = []
                     if army.get("comp"):
                         for k, v in army["comp"].items():
@@ -159,7 +178,6 @@ class GameplayCog(commands.Cog):
                                 comp_items.append(f"{k.title()[:3]}: {v}")
                     comp_str = " | ".join(comp_items) if comp_items else "-"
 
-                    # Location string
                     loc_display = f"📍 {army['location']}"
                     if (
                         army["status"] in ["MARCHING", "SAILING"]
@@ -167,14 +185,18 @@ class GameplayCog(commands.Cog):
                     ):
                         loc_display += f" → {army['destination']}"
 
-                    # Entry Construction
+                    # UPDATE 2: Display Army Treasury
+                    gold_str = ""
+                    army_gold = army.get("gold", 0)
+                    if army_gold > 0:
+                        gold_str = f" | 💰 {army_gold}g"
+
                     entry = (
                         f"**{icon} {army['name']} (ID: {army['id']})**\n"
                         f"{loc_display}\n"
-                        f"**{unit_noun}:** {army['count']}{cargo_ind} | **Comp:** {comp_str}\n\n"
+                        f"**{unit_noun}:** {army['count']}{cargo_ind} | **Comp:** {comp_str}{gold_str}\n\n"
                     )
 
-                    # Safety check: If adding this army exceeds limit, stop this page (rare with chunk 6)
                     if len(army_list_str) + len(entry) > 1020:
                         army_list_str += "*(...limit reached for this page)*"
                         break
@@ -192,7 +214,6 @@ class GameplayCog(commands.Cog):
             await ctx.send("Could not generate the report.")
             return
 
-        # Send with Paginator
         if len(embeds) > 1:
             view = Paginator(embeds)
             await ctx.send(embed=embeds[0], view=view)
@@ -371,227 +392,139 @@ class GameplayCog(commands.Cog):
         Displays your character stats, treasury, lands, and armies in your private channel.
         For GMs, displays a paginated list of all houses and their details.
         """
+        import time
+
+        # --- BENCHMARK START ---
+        start_time = time.perf_counter()
+
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
-            service = GameplayService(session)
-            data, error = await service.get_player_dashboard(
-                game.game_id, ctx.author.id
+            # --- Time the data-fetching part ---
+            db_start_time = time.perf_counter()
+
+            # The optimized query we built before is still good.
+            # We just need to make sure we use the data we fetch.
+            stmt = (
+                select(GamePlayer)
+                .join(User)
+                .where(
+                    User.discord_id == ctx.author.id, GamePlayer.game_id == game.game_id
+                )
+                .options(
+                    selectinload(GamePlayer.house).options(
+                        selectinload(House.fiefs),
+                        selectinload(House.armies),
+                        selectinload(House.characters),
+                    )
+                )
             )
 
-            if error:
-                return await ctx.send(error)
+            result = await session.execute(stmt)
+            game_player = result.scalars().unique().first()
 
-            is_gm_response = isinstance(data, list)
+            db_end_time = time.perf_counter()
+            db_duration = (db_end_time - db_start_time) * 1000
 
-            if is_gm_response:
-                # --- GM DASHBOARD RENDERING ---
-                # (Logic remains unchanged as per your request)
-                gm_embeds = []
-                sorted_data = sorted(data, key=lambda x: x["house_name"])
-                for i, house_data in enumerate(sorted_data):
-                    color_val = int(house_data["color"].lstrip("#"), 16)
-                    embed = discord.Embed(
-                        title=f"👑 GM Report: House {house_data['house_name']} (ID: {house_data['house_id']})",
-                        color=discord.Color(color_val),
-                    )
-                    embed.add_field(
-                        name="Commander", value=house_data["name"], inline=True
-                    )
-                    if house_data["parent_house"]:
-                        embed.add_field(
-                            name="Scion of",
-                            value=house_data["parent_house"],
-                            inline=True,
-                        )
-                    embed.add_field(
-                        name="Treasury",
-                        value=f"{house_data['treasury']} Gold",
-                        inline=True,
-                    )
-                    embed.add_field(
-                        name="Income",
-                        value=f"+{house_data['income']} / year",
-                        inline=True,
-                    )
-                    embed.add_field(
-                        name="Manpower",
-                        value=f"{house_data['manpower']} / {house_data['manpower_cap']}",
-                        inline=True,
-                    )
-
-                    armies_summary = ""
-                    total_idle_troops, total_moving_troops = 0, 0
-                    for army in house_data.get("armies", []):
-                        count = army["count"] + army.get("cargo_count", 0)
-                        if army["status"] in ["IDLE", "GARRISONED", "DOCKED"]:
-                            total_idle_troops += count
-                        else:
-                            total_moving_troops += count
-
-                    if total_idle_troops > 0:
-                        armies_summary += f"💤 Idle: {total_idle_troops} "
-                    if total_moving_troops > 0:
-                        armies_summary += f"🏃 Moving: {total_moving_troops} "
-                    embed.add_field(
-                        name="Forces",
-                        value=armies_summary.strip() or "No forces.",
-                        inline=False,
-                    )
-                    embed.set_footer(text=f"Page {i + 1} of {len(data)} (All Houses)")
-                    gm_embeds.append(embed)
-
-                view = Paginator(gm_embeds) if len(gm_embeds) > 1 else None
-                await ctx.send(embed=gm_embeds[0], view=view)
-
-            else:
-                # --- REGULAR PLAYER DASHBOARD LOGIC (Updated for ID System) ---
-
-                # 1. Fetch the GamePlayer record
-                stmt_gp = (
-                    select(GamePlayer)
-                    .join(User)
-                    .where(
-                        User.discord_id == ctx.author.id,
-                        GamePlayer.game_id == game.game_id,
-                    )
+            if not game_player or not game_player.house:
+                return await ctx.send(
+                    "❌ You do not seem to be part of a house in the active game."
                 )
-                gp = (await session.execute(stmt_gp)).scalars().first()
 
-                # 2. Security & Auto-Lock Logic
-                is_gm = ctx.author.guild_permissions.administrator
-                allowed_channels = ["bot-testing", "gm-requests"]
+            house = game_player.house
+            character = game_player.character or (
+                house.characters[0] if house.characters else None
+            )
 
-                if not is_gm and ctx.channel.name not in allowed_channels:
-                    # CASE A: User has a locked Channel ID in the DB
-                    if gp and gp.private_channel_id:
-                        if ctx.channel.id != gp.private_channel_id:
-                            correct_chan = self.bot.get_channel(gp.private_channel_id)
-                            mention = (
-                                correct_chan.mention
-                                if correct_chan
-                                else "your private quarters"
-                            )
-                            return await ctx.send(
-                                f"❌ **Security:** Please use this command in {mention} for privacy.",
-                                delete_after=15,
-                            )
+            # --- DATA PREPARATION (Updated for Fief/Army Gold) ---
+            data = {
+                "house_name": house.name,
+                "house_id": house.house_id,
+                "name": character.name if character else "N/A",
+                "parent_house": house.liege.name if house.liege else None,
+                "color": house.color_hex,
+                "treasury": house.treasury,
+                "income": "N/A",
+                "manpower": house.manpower,
+                "manpower_cap": house.manpower_cap,
+                # UPDATE 1: Include Fief Treasury
+                "fiefs": [
+                    {"name": f.name, "gold": f.treasury or 0} for f in house.fiefs
+                ],
+                "skills": character.skills if character else {},
+                "total_troops": sum(a.troop_count for a in house.armies),
+                "is_primary_player_house": game_player.is_primary,
+                "armies": [
+                    {
+                        "id": army.army_id,
+                        "name": army.commander_name,
+                        "location": f"({int(army.location_x)}, {int(army.location_y)})",
+                        "destination": (
+                            f"({int(army.destination_x)}, {int(army.destination_y)})"
+                            if army.destination_x is not None
+                            else None
+                        ),
+                        "status": army.status,
+                        "count": army.troop_count,
+                        "type": army.army_type,
+                        "comp": army.composition,
+                        "cargo_count": (
+                            army.cargo.get("troop_count", 0) if army.cargo else 0
+                        ),
+                        "departure_time": army.departure_time,
+                        # UPDATE 2: Include Army Treasury
+                        "gold": army.treasury or 0,
+                    }
+                    for army in house.armies
+                ],
+            }
 
-                    # CASE B: Legacy Player (No ID locked yet). Use slug-check then AUTO-LOCK.
-                    elif gp and not gp.private_channel_id:
-                        slug_name = f"{slugify(data['house_name'])}-quarters"
-                        char_slug = f"{slugify(data['name'])}-quarters"
-
-                        if ctx.channel.name in [slug_name, char_slug]:
-                            # User is in the right place! Lock the ID now.
-                            gp.private_channel_id = ctx.channel.id
-                            await session.commit()
-                            await ctx.send(
-                                "🔒 *System: Your private quarters have been linked to this channel.*",
-                                delete_after=5,
-                            )
-                        else:
-                            return await ctx.send(
-                                "❌ **Security:** Please use this command in your private quarters.",
-                                delete_after=15,
-                            )
-
-                # --- RENDERING DASHBOARD ---
-                # (Logic remains unchanged, using 'data' from service)
-                color_val = int(data["color"].lstrip("#"), 16)
-                armies = data.get("armies", [])
-                army_chunks = (
-                    [armies[i : i + 6] for i in range(0, len(armies), 6)]
-                    if armies
-                    else [[]]
-                )
-                embeds = []
-
-                for i, chunk in enumerate(army_chunks):
-                    embed = discord.Embed(
-                        title=f"📜 Player Report: {data['name']}",
-                        color=discord.Color(color_val),
+            # --- SECURITY CHECK (Unchanged) ---
+            is_gm = ctx.author.guild_permissions.administrator
+            if not is_gm and ctx.channel.name not in ["bot-testing", "gm-requests"]:
+                if game_player.private_channel_id:
+                    if ctx.channel.id != game_player.private_channel_id:
+                        correct_chan = self.bot.get_channel(
+                            game_player.private_channel_id
+                        )
+                        mention = (
+                            correct_chan.mention
+                            if correct_chan
+                            else "your private quarters"
+                        )
+                        return await ctx.send(
+                            f"❌ **Security:** Please use this command in {mention} for privacy.",
+                            delete_after=15,
+                        )
+                else:
+                    slug_name = f"{slugify(house.name)}-quarters"
+                    char_slug = (
+                        f"{slugify(character.name)}-quarters" if character else ""
                     )
-                    author_name = f"Head of House {data['house_name']}"
-                    if data["parent_house"]:
-                        author_name = f"Scion of House {data['parent_house']}"
-                    embed.set_author(name=author_name)
-
-                    if i == 0:
-                        skills = data.get("skills", {})
-                        if skills:
-                            stats_str = (
-                                f"⚔️ **Martial:** {skills.get('martial', 0)} | 📜 **Diplomacy:** {skills.get('diplomacy', 0)} | 💰 **Stewardship:** {skills.get('stewardship', 0)}\n"
-                                f"👁️ **Intrigue:** {skills.get('intrigue', 0)} | 💪 **Prowess:** {skills.get('prowess', 0)}"
-                            )
-                            embed.add_field(
-                                name="Character Stats", value=stats_str, inline=False
-                            )
-                        if data["is_primary_player_house"]:
-                            embed.add_field(
-                                name="Treasury",
-                                value=f"{data['treasury']} Gold",
-                                inline=True,
-                            )
-                            embed.add_field(
-                                name="Income",
-                                value=f"+{data['income']} / year",
-                                inline=True,
-                            )
-                            embed.add_field(
-                                name="Manpower",
-                                value=f"{data['manpower']} / {data['manpower_cap']}",
-                                inline=True,
-                            )
-                        if data["fiefs"]:
-                            embed.add_field(
-                                name=f"Lands ({len(data['fiefs'])})",
-                                value=", ".join(data["fiefs"])[:1024],
-                                inline=False,
-                            )
-                        embed.add_field(
-                            name=f"Total Military Strength: {data['total_troops']}",
-                            value="­",
-                            inline=False,
+                    if ctx.channel.name in [slug_name, char_slug]:
+                        game_player.private_channel_id = ctx.channel.id
+                        await session.commit()
+                        await ctx.send(
+                            "🔒 *System: Your private quarters have been linked to this channel.*",
+                            delete_after=5,
+                        )
+                    else:
+                        return await ctx.send(
+                            "❌ **Security:** Please use this command in your private quarters.",
+                            delete_after=15,
                         )
 
-                    if chunk:
-                        army_list_str = ""
-                        for army in chunk:
-                            status_icons = {
-                                "IDLE": "💤",
-                                "GARRISONED": "🏰",
-                                "DOCKED": "⚓",
-                                "MARCHING": "🦶",
-                                "SAILING": "⛵",
-                            }
-                            icon = status_icons.get(army["status"], "❓")
-                            cargo_indicator = (
-                                " 📦" if army.get("cargo_count", 0) > 0 else ""
-                            )
-                            unit_noun = (
-                                "Ships" if army.get("type") == "SEA" else "Troops"
-                            )
+            # --- CALL RENDERING ---
+            await self._render_detailed_dashboard(ctx, data)
 
-                            army_list_str += (
-                                f"**{icon} {army['name']} (ID: {army['id']})**\n"
-                            )
-                            loc_display = f"📍 {army['location']}"
-                            if (
-                                army["status"] in ["MARCHING", "SAILING"]
-                                and army["destination"]
-                            ):
-                                loc_display += f" → {army['destination']}"
-                            army_list_str += f"{loc_display} | {unit_noun}: {army['count']}{cargo_indicator}\n\n"
-                        embed.add_field(
-                            name="Armies & Fleets", value=army_list_str, inline=False
-                        )
-                    embeds.append(embed)
-
-                view = Paginator(embeds) if len(embeds) > 1 else None
-                await ctx.send(embed=embeds[0], view=view)
+            # Benchmark Output
+            total_end_time = time.perf_counter()
+            total_duration = (total_end_time - start_time) * 1000
+            print(
+                f"\n--- `!me` Benchmark ---\n  Data Fetching (DB): {db_duration:.2f} ms\n  Total Execution:    {total_duration:.2f} ms\n-----------------------"
+            )
 
     # --- GM COMMANDS ---
 
