@@ -2599,6 +2599,51 @@ class WarfareCog(commands.Cog):
             )
             await ctx.send(f"✅ GM Command: {msg}")
 
+    @commands.command(name="retreat")
+    @commands.check(is_in_house_channel)
+    async def retreat(self, ctx, army_id: int, *, destination: str):
+        """
+        Orders a defeated army to fall back to a nearby safe location.
+        Usage: !retreat [ArmyID] [Destination]
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            stmt = select(User).where(User.discord_id == ctx.author.id)
+            user = (await session.execute(stmt)).scalars().first()
+            if not user:
+                return await ctx.send("❌ You are not registered.")
+
+            service = WarfareService(session)
+            
+            async with ctx.typing():
+                success, response, _ = await service.retreat_army(
+                    game_id=game.game_id,
+                    user_id=user.user_id,
+                    identifier=str(army_id),
+                    dest_name=destination
+                )
+
+            if success:
+                embed = discord.Embed(
+                    title="🏳️ Falling Back!",
+                    description=f"**{response['commander']}** has rallied the survivors and is retreating to **{response['destination']}**.",
+                    color=discord.Color.dark_grey()
+                )
+                embed.add_field(name="Est. Time", value=response['time'], inline=True)
+                embed.add_field(name="Distance", value=f"{response['distance']} miles", inline=True)
+                
+                if response.get("image"):
+                    image_file = discord.File(response["image"], filename="retreat.png")
+                    embed.set_image(url="attachment://retreat.png")
+                    await ctx.send(file=image_file, embed=embed)
+                    response["image"].close()
+                else:
+                    await ctx.send(embed=embed)
+            else:
+                await ctx.send(response) # Error message
     @commands.command()
     async def occupy(self, ctx, army_id: int):
         """Occupies a Fief if it is undefended."""
