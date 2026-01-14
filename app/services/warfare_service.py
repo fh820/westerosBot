@@ -967,23 +967,11 @@ class WarfareService:
             game_id, army_to_move.army_id, path_points, now, duration
         )
         if source_army.status == "RETREATING":
-            filtered_collisions = []
-            for col in collisions:
-                # Calculate distance between start point and collision point
-                cx, cy = col["coords"]
-                dist_from_start = math.sqrt(
-                    (cx - start_coords[0]) ** 2 + (cy - start_coords[1]) ** 2
-                )
-
-                # Only keep collisions that are further than 50 pixels away.
-                # This allows the army to "break contact" and leave the tile.
-                if dist_from_start > 50.0:
-                    filtered_collisions.append(col)
-                else:
-                    print(
-                        f"[DEBUG] Ignored collision with Army {col['enemy_id']} due to Retreat status."
-                    )
-            collisions = filtered_collisions
+            return (
+                False,
+                "❌ This army is in disarray! You must use `!retreat [ID] [Location]` to fall back to a nearby safe haven.",
+                None,
+            )
         # 1. Filter for valid LAND enemies only
         unique_enemy_ids = {c["enemy_id"] for c in collisions}
         valid_land_ids = set()
