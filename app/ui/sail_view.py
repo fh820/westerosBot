@@ -116,9 +116,78 @@ class SailContinueView(discord.ui.View):
         )
         self.stop()
         button.disabled = True
+        self.children[1].disabled = True
         await interaction.edit_original_response(
             content="✅ Provisioning crew...", view=self
         )
+
+    # --- NEW BUTTON ---
+    @discord.ui.button(
+        label="Sail Empty", style=discord.ButtonStyle.secondary, emoji="💨"
+    )
+    async def empty_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        await interaction.response.send_message(
+            "🌊 Orders received! Charting course...", ephemeral=True
+        )
+
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, interaction.guild.id)
+            user = await session.scalar(
+                select(User).where(User.discord_id == interaction.user.id)
+            )
+            service = WarfareService(session)
+
+            success, result, fog_msg = await service.sail_fleet(
+                game_id=game.game_id,
+                user_id=user.user_id,
+                fleet_id=self.fleet.army_id,
+                ships_input=self.setup_data["ships"],
+                dest_name=self.setup_data["destination"],
+                units_input="empty",  # <--- MAGIC KEYWORD
+                commander=None,
+                gold_to_carry=self.setup_data["gold"],
+                waypoints=self.setup_data["waypoints"],
+            )
+
+            if not success:
+                return await interaction.followup.send(result, ephemeral=True)
+
+            # Success Feedback
+            file = discord.File(result["image"], filename="route.png")
+            embed = discord.Embed(
+                title="⛵ Sail Order Issued", color=discord.Color.blue()
+            )
+            embed.description = result.get("journey_summary")
+            embed.add_field(
+                name="Fleet Commander", value=result["commander"], inline=True
+            )
+            embed.add_field(name="Total Troops", value="0 (Empty Ships)", inline=True)
+            if result.get("gold_carried", 0) > 0:
+                embed.add_field(
+                    name="Gold Carried",
+                    value=f"💰 {result['gold_carried']}",
+                    inline=True,
+                )
+            embed.add_field(name="Final ETA", value=result["time"], inline=False)
+            embed.set_image(url="attachment://route.png")
+            embed.set_footer(
+                text=f"Origin: {result['origin']} → Final Dest: {result['destination']}"
+            )
+            await interaction.followup.send(file=file, embed=embed, ephemeral=False)
+
+            if fog_msg:
+                gen_channel = discord.utils.get(
+                    interaction.guild.text_channels, name="general-movements"
+                )
+                if gen_channel:
+                    await gen_channel.send(fog_msg)
+
+        self.stop()
+        button.disabled = True
+        self.children[0].disabled = True
+        await interaction.edit_original_response(view=self)
 
 
 # ============================================================

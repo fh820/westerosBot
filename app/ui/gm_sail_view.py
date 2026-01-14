@@ -87,6 +87,44 @@ class GMSailContinueView(View):
         button.disabled = True
         await interaction.edit_original_response(view=self)
 
+    # --- NEW BUTTON ---
+    @discord.ui.button(
+        label="Sail Empty", style=discord.ButtonStyle.secondary, emoji="💨"
+    )
+    async def empty_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.send_message(
+            "⚙️ GM Override: Charting course (Empty)...", ephemeral=True
+        )
+
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, interaction.guild.id)
+            gm_user = await session.scalar(
+                select(User).where(User.discord_id == interaction.user.id)
+            )
+            service = WarfareService(session)
+
+            success, result, fog_msg = await service.sail_fleet(
+                game_id=game.game_id,
+                user_id=gm_user.user_id,
+                fleet_id=self.fleet.army_id,
+                ships_input=self.setup_data["ships"],
+                dest_name=self.setup_data["destination"],
+                units_input="empty",  # <--- MAGIC KEYWORD
+                commander=None,
+                gold_to_carry=self.setup_data["gold"],
+                waypoints=self.setup_data["waypoints"],
+                is_gm_override=True,
+                acting_house_id=self.target_house_id,
+            )
+            await send_gm_sail_feedback(
+                interaction, success, result, fog_msg, self.target_house_id
+            )
+
+        self.stop()
+        button.disabled = True
+        self.children[0].disabled = True  # Disable the other button too
+        await interaction.edit_original_response(view=self)
+
 
 # ============================================================
 #               STEP 2: SETUP MODAL (GM)

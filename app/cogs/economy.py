@@ -1658,15 +1658,14 @@ class EconomyCog(commands.Cog):
     @gm_econ.command(name="fief")
     async def gm_fief_lookup(self, ctx, *, fief_name: str):
         """
-        GM: Search for Fief IDs by name (Paginated).
-        Usage: !gm_econ fief Dragonstone
+        GM: Search for Fief IDs by name.
         """
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
                 return await ctx.send("❌ No active game.")
 
-            # Search with partial match
+            # CRITICAL: options(selectinload(Fief.owner)) prevents MissingGreenlet error
             stmt = (
                 select(Fief)
                 .where(Fief.game_id == game.game_id, Fief.name.ilike(f"%{fief_name}%"))
@@ -1679,42 +1678,15 @@ class EconomyCog(commands.Cog):
             if not fiefs:
                 return await ctx.send(f"❌ No fiefs found matching '**{fief_name}**'.")
 
-            # Formatting
             lines = []
             for f in fiefs:
+                # f.owner access here is now safe because of selectinload above
                 owner = f.owner.name if f.owner else "Independent"
-                line = (
-                    f"🏰 **{f.name}** (ID: `{f.fief_id}`)\n"
-                    f"└ Owner: {owner} | 💰 {f.treasury or 0}g | 📍 {f.location_x}, {f.location_y}"
+                lines.append(
+                    f"🏰 **{f.name}** (ID: `{f.fief_id}`) | Owner: {owner} | 💰 {f.treasury or 0}g"
                 )
-                lines.append(line)
 
-            # Chunking (e.g., 8 fiefs per page)
-            ITEMS_PER_PAGE = 8
-            chunks = [
-                lines[i : i + ITEMS_PER_PAGE]
-                for i in range(0, len(lines), ITEMS_PER_PAGE)
-            ]
-
-            # Create Embeds for each page
-            embeds = []
-            for i, chunk in enumerate(chunks):
-                embed = discord.Embed(
-                    title=f"🔎 Fief Search: '{fief_name}'", color=discord.Color.blue()
-                )
-                embed.description = "\n\n".join(chunk)
-                embed.set_footer(
-                    text=f"Page {i+1}/{len(chunks)} | Total Results: {len(fiefs)}"
-                )
-                embeds.append(embed)
-
-            # Send
-            if len(embeds) == 1:
-                await ctx.send(embed=embeds[0])
-            else:
-                view = SimplePaginationView(embeds)
-                # Manually set the message reference so interaction check works strictly
-                view.message = await ctx.send(embed=embeds[0], view=view)
+            await ctx.send("\n".join(lines)[:2000])
 
 
 async def setup(bot):

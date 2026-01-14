@@ -43,23 +43,30 @@ class EconomyService:
         target_id: int,
     ):
         """
-        Generic Transfer Logic.
-        source_type: 'FIEF', 'ARMY', or 'HOUSE' (resolves to Capital)
-        target_type: 'FIEF', 'ARMY', or 'HOUSE' (resolves to Capital)
+        Generic Transfer Logic (Async Safe).
         """
         if amount <= 0:
             return False, "❌ Amount must be positive."
+
+        # Helper to fetch objects safely
+        async def fetch_obj(model, ident):
+            # We use select() instead of get() to ensure we are in the async execution context
+            # and to allow expanding this with options() later if needed.
+            stmt = select(model).where(
+                getattr(model, model.__table__.primary_key.columns.keys()[0]) == ident
+            )
+            return (await self.session.execute(stmt)).scalars().first()
 
         # --- 1. RESOLVE SOURCE ---
         source_obj = None
         source_name = ""
 
         if source_type == "FIEF":
-            source_obj = await self.session.get(Fief, source_id)
+            source_obj = await fetch_obj(Fief, source_id)
             source_name = f"Fief {source_obj.name}" if source_obj else "Unknown"
 
         elif source_type == "ARMY":
-            source_obj = await self.session.get(Army, source_id)
+            source_obj = await fetch_obj(Army, source_id)
             source_name = (
                 f"Army {source_obj.commander_name}" if source_obj else "Unknown"
             )
@@ -96,17 +103,16 @@ class EconomyService:
         target_name = ""
 
         if target_type == "FIEF":
-            target_obj = await self.session.get(Fief, target_id)
+            target_obj = await fetch_obj(Fief, target_id)
             target_name = f"Fief {target_obj.name}" if target_obj else "Unknown"
 
         elif target_type == "ARMY":
-            target_obj = await self.session.get(Army, target_id)
+            target_obj = await fetch_obj(Army, target_id)
             target_name = (
                 f"Army {target_obj.commander_name}" if target_obj else "Unknown"
             )
 
         elif target_type == "HOUSE":
-            # Resolve House ID to its Capital Fief
             stmt = (
                 select(Fief)
                 .where(Fief.owner_id == target_id)
