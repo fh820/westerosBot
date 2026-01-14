@@ -3700,3 +3700,95 @@ class WarfareService:
             True,
             f"✅ Army **{army_id}** is now commanded by **{name}** (Martial: {martial}).",
         )
+    async def manual_casualty_calculation(self, winner_id: int, loser_id: int, score_str: str, retreat_success: bool):
+        """
+        GM Tool: Manually applies battle casualties based on a final score.
+        score_str format: "WinnerScore-LoserScore" (e.g., "5-0", "5-2")
+        """
+        winner = await self.session.get(Army, winner_id)
+        loser = await self.session.get(Army, loser_id)
+
+        if not winner or not loser:
+            return False, "One or both armies not found."
+
+        try:
+            w_score, l_score = map(int, score_str.split("-"))
+        except ValueError:
+            return False, "Invalid score format. Use '5-0', '5-2', etc."
+
+        # 1. Apply Casualties for the ROUNDS fought
+        # We simulate the battle round by round.
+        # Winner won `w_score` rounds. Loser won `l_score` rounds.
+        
+        rounds_played = w_score + l_score
+        
+        # Base loss per round (averaged from your 1-3% range)
+        AVG_LOSS_PCT = 0.02 
+        BONUS_LOSS_PCT = 0.02 # Extra loss for losing the round
+
+        # Winner's Losses:
+        # They lost `l_score` rounds (taking AVG + BONUS damage)
+        # They won `w_score` rounds (taking AVG damage)
+        winner_total_loss_pct = (l_score * (AVG_LOSS_PCT + BONUS_LOSS_PCT)) + (w_score * AVG_LOSS_PCT)
+        
+        # Loser's Losses:
+        # They lost `w_score` rounds (taking AVG + BONUS damage)
+        # They won `l_score` rounds (taking AVG damage)
+        loser_total_loss_pct = (w_score * (AVG_LOSS_PCT + BONUS_LOSS_PCT)) + (l_score * AVG_LOSS_PCT)
+
+        # Apply Round Casualties
+        w_losses = int(winner.troop_count * winner_total_loss_pct)
+        l_losses = int(loser.troop_count * loser_total_loss_pct)
+
+        winner.troop_count = max(0, winner.troop_count - w_losses)
+        loser.troop_count = max(0, loser.troop_count - l_losses)
+
+        # 2. Apply ROUT Casualties (The aftermath)
+        # Calculate victory intensity (0-5 scale) based on score difference
+        diff = w_score - l_score
+        # Map score difference to intensity index (5-0 -> index 5, 5-4 -> index 1)
+        # WINNER_CASUALTY_TABLE keys are 0-5.
+        # If diff is 5 (5-0), index is 5.
+        intensity_index = max(0, min(5, diff))
+
+        # Get rout percentages
+        rout_win_pct = getattr(self, "WINNER_CASUALTY_TABLE", {}).get(intensity_index, 0.05)
+        rout_los_pct = getattr(self, "LOSER_CASUALTY_TABLE", {}).get(intensity_index, 0.45)
+
+        w_rout_loss = int(winner.troop_count * rout_win_pct)
+        l_rout_loss = int(loser.troop_count * rout_los_pct)
+
+        winner.troop_count = max(0, winner.troop_count - w_rout_loss)
+        loser.troop_count = max(0, loser.troop_count - l_rout_loss)
+
+        # 3. Update Compositions
+        self._scale_composition(winner, winner.troop_count)
+        self._scale_composition(loser, loser.troop_count)
+
+        # 4. Handle Retreat/Wipe
+        outcome_msg = ""
+        if loser.troop_count <= 0:
+             await self.session.delete(loser)
+             outcome_msg = f"💀 **{loser.commander_name}** was wiped out."
+        elif not retreat_success:
+             # Failed retreat = Wipe
+             outcome_msg = f"💀 **{loser.commander_name}** failed to retreat and was destroyed."
+             await self.session.delete(loser)
+        else:
+             outcome_msg = f"💨 **{loser.commander_name}** retreated with {loser.troop_count} survivors."
+             loser.status = "RETREATING"
+             self._stop_movement_immediately(loser)
+
+        self._stop_movement_immediately(winner)
+        await self.session.commit()
+
+        total_w_lost = w_losses + w_rout_loss
+        total_l_lost = l_losses + l_rout_loss
+
+        return True, (
+            f"⚔️ **Manual Battle Resolution**\n"
+            f"Score: {w_score} - {l_score}\n\n"
+            f"**Winner ({winner.commander_name}):** Lost {total_w_lost} troops.\n"
+            f"**Loser:** Lost {total_l_lost} troops.\n\n"
+            f"**Outcome:** {outcome_msg}"
+        )
