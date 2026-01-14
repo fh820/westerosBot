@@ -427,6 +427,7 @@ def dispatch_gate_alert(
             "type": "GATE_ALERT",
             "guild_id": army.house.game.guild_id,
             "attacking_army_id": army.army_id,
+            "unit_type": army.army_type,
             "gate_name": gate_name,
             "marcher": {
                 "house_name": army.house.name,
