@@ -79,6 +79,9 @@
 import discord
 from app.celery_app import celery_app
 from celery.result import AsyncResult
+from app.db.db_manager import get_session # <--- Add this
+from app.db.models import Battle          # <--- Add this
+from sqlalchemy import delete             # <--- Add this
 
 
 class AutoBattleControlView(discord.ui.View):
@@ -122,10 +125,26 @@ class AutoBattleControlView(discord.ui.View):
         if self.resolver_task_id:
             AsyncResult(self.resolver_task_id, app=celery_app).revoke(terminate=True)
 
-        await interaction.response.send_message(
-            "✅ **Auto-battle cancelled.** You may now resolve this battle manually using the `!battle` command.",
-            ephemeral=True,
-        )
+        # 2. Delete the "Auto" version so you can start a "Manual" version cleanly.
+        try:
+            async with get_session() as session:
+                await session.execute(
+                    delete(Battle).where(Battle.id == self.battle_id)
+                )
+                await session.commit()
+            
+            msg = (
+                "✅ **Auto-battle cancelled and record deleted.**\n"
+                "You may now use:\n"
+                "1. `!battle [AttackerID] [DefenderID]` to roll manually.\n"
+                "2. `!gm_war calc_casualties` to skip rolling entirely."
+            )
+        except Exception as e:
+            msg = f"⚠️ Task cancelled, but DB deletion failed: {e}. You might have duplicate battles if you run !battle now."
+
+        # FIX: Send the 'msg' variable, not the hardcoded string
+        await interaction.response.send_message(msg, ephemeral=True)
+        
         await self.disable_all_buttons(interaction, "Auto-Battle Cancelled by GM.")
 
     @discord.ui.button(
