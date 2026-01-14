@@ -744,7 +744,8 @@ class BattleService:
         self, game_id, attacker_id, defender_id, ambush, defense
     ):
         """
-        Starts an auto-resolved battle. Distinct from start_battle to ensure explicit loading for background tasks.
+        Starts an auto-resolved battle. 
+        UPDATED: Now uses 1:1 math with Manual Battle for Initial Odds.
         """
         stmt = (
             select(Army)
@@ -758,19 +759,50 @@ class BattleService:
         if not attacker or not defender:
             return None, "Armies not found.", None
 
-        battle_type = "LAND_BATTLE"
-        att_martial = await self._get_army_martial(attacker)
-        def_martial = await self._get_army_martial(defender)
+        # Determine type based on attacker (same as manual)
+        battle_type = "SEA_BATTLE" if attacker.army_type == "SEA" else "LAND_BATTLE"
+        
+        # 1. Calculate Base Power
         _, att_bp = self._calculate_army_bp(attacker)
         _, def_bp = self._calculate_army_bp(defender)
 
-        att_bonus, def_bonus = att_martial / 3.0, def_martial / 3.0
+        # 2. Get Martial Scores
+        att_martial = await self._get_army_martial(attacker)
+        def_martial = await self._get_army_martial(defender)
+
+        # 3. Calculate Bonuses (Martial / 3)
+        att_bonus = att_martial / 3.0
+        def_bonus = def_martial / 3.0
+
+        # 4. Apply Terrain/Ambush Modifiers (Only for LAND)
+        # Note: battle_tasks.py currently passes "none", but this logic ensures 
+        # it handles it correctly if that changes in the future.
+        if battle_type == "LAND_BATTLE":
+            att_bonus += {"extreme": 15, "good": 10, "decent": 5, "failed": -5}.get(
+                ambush.lower(), 0
+            )
+            def_bonus += {"major": 20, "significant": 10, "minor": 5}.get(
+                defense.lower(), 0
+            )
+
+        # 5. Apply Outnumbering Bonus
         if attacker.troop_count > defender.troop_count * 1.2:
             att_bonus += 4
         elif defender.troop_count > attacker.troop_count * 1.2:
             def_bonus += 4
 
-        odds = int(max(1, min(99, 50 + ((att_bp + att_bonus) - (def_bp + def_bonus)))))
+        # 6. Calculate Totals
+        att_total = att_bp + att_bonus
+        def_total = def_bp + def_bonus
+
+        # 7. Calculate Odds (Ratio Method - FIX APPLIED HERE)
+        if att_total + def_total == 0:
+            odds = 50
+        else:
+            odds = (att_total / (att_total + def_total)) * 100
+
+        # Clamp 1-99
+        odds = int(max(1, min(99, odds)))
 
         new_battle = Battle(
             game_id=game_id,
@@ -780,6 +812,13 @@ class BattleService:
             battle_type=battle_type,
             att_start_count=attacker.troop_count,
             def_start_count=defender.troop_count,
+            # Ensure cargo snapshots are taken for auto-battles too
+            att_start_cargo_count=(
+                attacker.cargo.get("troop_count", 0) if attacker.cargo else 0
+            ),
+            def_start_cargo_count=(
+                defender.cargo.get("troop_count", 0) if defender.cargo else 0
+            ),
         )
         self.session.add(new_battle)
         self._stop_movement_immediately(attacker)
