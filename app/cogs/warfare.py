@@ -38,6 +38,7 @@ from app.checks import (
     recruitment_is_enabled,
 )
 from app.services.common import slugify
+from app.services.battle_service import BattleService
 
 fief_cache = {}
 
