@@ -3682,6 +3682,154 @@ class WarfareService:
             traceback.print_exc()
             return False, f"An unexpected error occurred: {e}"
 
+
+    async def retreat_army(
+        self,
+        game_id: int,
+        user_id: int,
+        identifier: str,
+        dest_name: str,
+        waypoints: str | None = None,
+    ):
+        """
+        Special movement command for armies in 'RETREATING' status.
+        - Enforces a maximum distance (must flee to nearby safety).
+        - Ignores collisions within a specific radius of the start point (allows breaking contact).
+        """
+        # 1. Validation
+        source_army = await ArmyRepo.get_army_by_id(self.session, int(identifier))
+        if not source_army:
+            return False, f"❌ Army ID {identifier} not found.", None
+
+        # Check Authority
+        player = await self.session.scalar(
+            select(GamePlayer).where(
+                GamePlayer.user_id == user_id, GamePlayer.game_id == game_id
+            )
+        )
+        if not player or not await self._check_command_authority(player, source_army):
+            return False, "❌ You do not have authority over this army.", None
+
+        # Check Status
+        if source_army.status != "RETREATING":
+            return False, f"❌ Army is **{source_army.status}**. Use `!march` instead.", None
+
+        # 2. Pathfinding & Distance Cap
+        # Define how far a shattered army can run (e.g., 500 pixels ~ 500 miles approx)
+        MAX_RETREAT_DISTANCE = 500.0 
+        
+        origin_name = await self.get_location_name_from_coords(
+            game_id, source_army.location_x, source_army.location_y
+        )
+        dest_coords = await self._get_location_from_db(game_id, dest_name)
+        
+        if not dest_coords:
+             return False, f"❌ Destination '{dest_name}' is invalid.", None
+
+        start_coords = (int(source_army.location_x), int(source_army.location_y))
+
+        # Retreats are usually messy; assume "optimal" (fastest) path, no specific travel modes
+        path_data = await PF_ENGINE.find_journey_async(
+            start_loc=start_coords,
+            end_loc=(dest_coords["x"], dest_coords["y"]),
+            waypoints=[wp.strip() for wp in waypoints.split(";")] if waypoints else [],
+            travel_mode="optimal",
+            gm_settings={}, # Pass defaults
+        )
+
+        if not path_data:
+            return False, "❌ No path found for retreat.", None
+        
+        if path_data["total_distance"] > MAX_RETREAT_DISTANCE:
+            return False, (
+                f"❌ **Retreat Target Too Far:** A routing army cannot maintain cohesion for long marches.\n"
+                f"Max Distance: {int(MAX_RETREAT_DISTANCE)} miles. Target is {int(path_data['total_distance'])} miles away.\n"
+                f"Pick a closer safe haven."
+            ), None
+
+        # 3. Apply Movement
+        duration = calculate_travel_duration(
+            path_data["terrain_breakdown"], source_army.troop_count
+        )
+        
+        now = datetime.datetime.now(datetime.timezone.utc)
+        arrival_time = now + datetime.timedelta(seconds=duration)
+
+        # Update DB
+        source_army.destination_x = dest_coords["x"]
+        source_army.destination_y = dest_coords["y"]
+        source_army.departure_time = now
+        source_army.arrival_time = arrival_time
+        # We keep the status as RETREATING while moving. 
+        # The arrival task should detect this and set it to IDLE upon arrival.
+        
+        task = resolve_army_arrival.apply_async(
+            args=[source_army.army_id], eta=arrival_time
+        )
+        source_army.task_id = task.id
+        await self.session.commit()
+
+        # 4. Collision Detection with GRACE ZONE
+        path_points = path_data.get("path_points", [])
+        await ArmyRepo.log_march_path(
+            self.session, source_army.army_id, game_id, path_points, now, duration
+        )
+
+        from app.tasks.light_tasks import initiate_player_interaction
+        
+        collisions = await self.check_interceptions_advanced(
+            game_id, source_army.army_id, path_points, now, duration
+        )
+
+        # --- THE FIX: Filter Collisions ---
+        valid_collisions = []
+        GRACE_RADIUS = 80.0 # Pixels. Ignores enemies sitting on top of you.
+
+        for col in collisions:
+            cx, cy = col["coords"]
+            # Calculate distance from START point to COLLISION point
+            dist_from_start = math.sqrt((cx - start_coords[0])**2 + (cy - start_coords[1])**2)
+            
+            if dist_from_start > GRACE_RADIUS:
+                valid_collisions.append(col)
+            else:
+                print(f"[RETREAT] Ignored immediate collision with Army {col['enemy_id']} (Dist: {dist_from_start:.1f})")
+
+        # Pick the first valid one (Standard Logic)
+        if valid_collisions:
+            # Sort by time
+            valid_collisions.sort(key=lambda x: x["time"])
+            first_contact = valid_collisions[0]
+            
+            prompt_time = first_contact["time"] - datetime.timedelta(hours=1)
+            if prompt_time < now:
+                prompt_time = now + datetime.timedelta(seconds=15)
+
+            initiate_player_interaction.apply_async(
+                args=[
+                    game_id,
+                    source_army.army_id,
+                    first_contact["enemy_id"],
+                    first_contact["time"],
+                    first_contact["coords"][0],
+                    first_contact["coords"][1],
+                ],
+                eta=prompt_time,
+            )
+
+        await self.session.commit()
+
+        # 5. Response
+        response_data = {
+            "image": path_data["image"],
+            "time": format_duration(duration),
+            "distance": int(path_data["total_distance"]),
+            "commander": source_army.commander_name,
+            "origin": origin_name or "The Battlefield",
+            "destination": dest_name,
+        }
+        return True, response_data, None
+
     async def set_army_commander(self, army_id: int, name: str, martial: int):
         """
         GM Tool: Assigns a specific commander name and martial score to an army.
@@ -3792,3 +3940,4 @@ class WarfareService:
             f"**Loser:** Lost {total_l_lost} troops.\n\n"
             f"**Outcome:** {outcome_msg}"
         )
+    
