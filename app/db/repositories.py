@@ -112,7 +112,7 @@ class ArmyRepo:
         time_window = datetime.timedelta(minutes=45)
         start_window = time_at_point - time_window
         end_window = time_at_point + time_window
-        radius = 75.0
+        radius = 25.0
 
         stmt = select(MarchLog.army_id).where(
             MarchLog.game_id == game_id,
