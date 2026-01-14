@@ -172,7 +172,7 @@ def resolve_army_arrival(self, army_id: int):
         # If a duplicate task runs, it will wait at the query above. By the time
         # it gets the lock, the first task will have already changed the status,
         # so this check will correctly fail, preventing a duplicate notification.
-        if not army or army.status not in ["MARCHING", "SAILING"]:
+        if not army or army.status not in ["MARCHING", "SAILING","RETREATING"]:
             session.commit()  # End the transaction to release the lock.
             session.close()
             return
@@ -371,7 +371,7 @@ def dispatch_gate_alert(
         # If a duplicate task runs, it will wait here. By the time it acquires
         # the lock, the first task will have changed the status to "IDLE",
         # causing this check to fail and preventing a duplicate alert.
-        if not army or army.status not in ["MARCHING", "SAILING"]:
+        if not army or army.status not in ["MARCHING", "SAILING","RETREATING"]:
             print(
                 f"Gate alert for Army {army_id} skipped: Army not found or already halted (Status: {army.status if army else 'N/A'})."
             )
@@ -712,7 +712,7 @@ def resolve_player_interaction(interaction_id: int):
 
         # --- Define Synchronous Helper ---
         def halt_army_sync(army: Army, x: float, y: float):
-            if not army or army.status not in ["MARCHING", "SAILING"]:
+            if not army or army.status not in ["MARCHING", "SAILING","RETREATING"]:
                 return
             if army.task_id:
                 AsyncResult(army.task_id, app=celery_app).revoke(terminate=True)
