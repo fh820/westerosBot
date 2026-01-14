@@ -1888,8 +1888,8 @@ class WarfareService:
         Returns list of dicts containing Time/Coords (for scheduling) AND Messages (for UI).
         """
         alerts = []
-        step = 10
-        radius = 75.0
+        step = 5
+        radius = 25.0
         total_points = len(path_points)
         if total_points == 0:
             return []
