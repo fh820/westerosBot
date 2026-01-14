@@ -2859,6 +2859,30 @@ class WarfareCog(commands.Cog):
             service = WarfareService(session)
             success, msg = await service.set_army_commander(army_id, name, martial)
             await ctx.send(msg)
+            
+    @gm_war.command(name="calc_casualties")
+    @commands.check(is_gm)
+    async def gm_calc_casualties(self, ctx, winner_id: int, loser_id: int, score: str, retreat: str):
+        """
+        GM: Manually apply battle casualties based on a score.
+        Usage: !gm_war calc_casualties [WinnerID] [LoserID] 5-0 true
+        (retreat: true/false - did the loser successfully retreat?)
+        """
+        retreat_bool = retreat.lower() in ["true", "yes", "y", "1"]
+        
+        async with get_session() as session:
+            service = BattleService(session) # Assuming BattleService is imported
+            # Note: You might need to move BattleService import or instantiate WarfareService if it has the helper
+            # Since we added it to BattleService, use that.
+            
+            success, msg = await service.manual_casualty_calculation(
+                winner_id, loser_id, score, retreat_bool
+            )
+            
+            if success:
+                await ctx.send(embed=discord.Embed(description=msg, color=discord.Color.gold()))
+            else:
+                await ctx.send(f"❌ Error: {msg}")
 
 
 async def setup(bot):
