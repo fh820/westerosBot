@@ -645,9 +645,27 @@ def initiate_player_interaction(
             args=[new_interaction.id], eta=final_expiry
         )
         new_interaction.resolver_task_id = resolver_task.id
+        from sqlalchemy import func
 
+        region_query = (
+            session.query(Fief.region)
+            .order_by(
+                func.sqrt(
+                    func.pow(Fief.location_x - intercept_x, 2)
+                    + func.pow(Fief.location_y - intercept_y, 2)
+                )
+            )
+            .limit(1)
+            .first()
+        )
+        location_name = region_query[0] if region_query else "the wilderness"
         # 6. Publish to Redis (This will now only happen ONCE)
-        payload = {"type": "PROMPT_INTERACTION", "interaction_id": new_interaction.id}
+        payload = {
+            "type": "PROMPT_INTERACTION",
+            "interaction_id": new_interaction.id,
+            "location": location_name,  # <--- ADD THIS
+            "coords": f"{int(intercept_x)}, {int(intercept_y)}",  # <--- ADD THIS
+        }
         if REDIS_CLIENT:
             REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
 

@@ -319,7 +319,13 @@ class BattleService:
         stmt = (
             select(Battle)
             .where(Battle.id == battle_id)
-            .options(selectinload(Battle.game), selectinload(Battle.fief))
+            .options(
+                selectinload(Battle.game),
+                selectinload(Battle.fief),
+                # --- FIX: Load these so the AI Chronicler doesn't crash the bot ---
+                selectinload(Battle.attacker).selectinload(Army.house),
+                selectinload(Battle.defender).selectinload(Army.house),
+            )
         )
         battle = (await self.session.execute(stmt)).scalars().first()
         if not battle:
@@ -565,15 +571,6 @@ class BattleService:
             # Land or Siege
             win_pct = WINNER_CASUALTY_TABLE.get(score_index, 0.05)
             los_pct = LOSER_CASUALTY_TABLE.get(score_index, 0.45)
-
-        # Fallback if config is missing
-        if (
-            win_pct == 0.05
-            and los_pct == 0.45
-            and not getattr(self, "WINNER_CASUALTY_TABLE", None)
-        ):
-            # Hardcoded fallback just in case
-            win_pct, los_pct = 0.05, 0.45
 
         def apply_rout_losses(army, loss_pct, is_loser):
             if army.troop_count <= 0:

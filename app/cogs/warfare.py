@@ -999,7 +999,8 @@ class WarfareCog(commands.Cog):
         )
 
         try:
-            await final_channel.send(ping_message, embed=embed, view=view)
+            msg = await final_channel.send(ping_message, embed=embed, view=view)
+            view.message = msg
             print(f"Successfully sent interactive gate alert to #{final_channel.name}")
         except Exception as e:
             print(f"❌ Error sending gate alert: {e}")
@@ -2618,24 +2619,26 @@ class WarfareCog(commands.Cog):
                 return await ctx.send("❌ You are not registered.")
 
             service = WarfareService(session)
-            
+
             async with ctx.typing():
                 success, response, _ = await service.retreat_army(
                     game_id=game.game_id,
                     user_id=user.user_id,
                     identifier=str(army_id),
-                    dest_name=destination
+                    dest_name=destination,
                 )
 
             if success:
                 embed = discord.Embed(
                     title="🏳️ Falling Back!",
                     description=f"**{response['commander']}** has rallied the survivors and is retreating to **{response['destination']}**.",
-                    color=discord.Color.dark_grey()
+                    color=discord.Color.dark_grey(),
                 )
-                embed.add_field(name="Est. Time", value=response['time'], inline=True)
-                embed.add_field(name="Distance", value=f"{response['distance']} miles", inline=True)
-                
+                embed.add_field(name="Est. Time", value=response["time"], inline=True)
+                embed.add_field(
+                    name="Distance", value=f"{response['distance']} miles", inline=True
+                )
+
                 if response.get("image"):
                     image_file = discord.File(response["image"], filename="retreat.png")
                     embed.set_image(url="attachment://retreat.png")
@@ -2644,7 +2647,8 @@ class WarfareCog(commands.Cog):
                 else:
                     await ctx.send(embed=embed)
             else:
-                await ctx.send(response) # Error message
+                await ctx.send(response)  # Error message
+
     @commands.command()
     async def occupy(self, ctx, army_id: int):
         """Occupies a Fief if it is undefended."""
@@ -2905,28 +2909,32 @@ class WarfareCog(commands.Cog):
             service = WarfareService(session)
             success, msg = await service.set_army_commander(army_id, name, martial)
             await ctx.send(msg)
-            
+
     @gm_war.command(name="calc_casualties")
     @commands.check(is_gm)
-    async def gm_calc_casualties(self, ctx, winner_id: int, loser_id: int, score: str, retreat: str):
+    async def gm_calc_casualties(
+        self, ctx, winner_id: int, loser_id: int, score: str, retreat: str
+    ):
         """
         GM: Manually apply battle casualties based on a score.
         Usage: !gm_war calc_casualties [WinnerID] [LoserID] 5-0 true
         (retreat: true/false - did the loser successfully retreat?)
         """
         retreat_bool = retreat.lower() in ["true", "yes", "y", "1"]
-        
+
         async with get_session() as session:
-            service = BattleService(session) # Assuming BattleService is imported
+            service = BattleService(session)  # Assuming BattleService is imported
             # Note: You might need to move BattleService import or instantiate WarfareService if it has the helper
             # Since we added it to BattleService, use that.
-            
+
             success, msg = await service.manual_casualty_calculation(
                 winner_id, loser_id, score, retreat_bool
             )
-            
+
             if success:
-                await ctx.send(embed=discord.Embed(description=msg, color=discord.Color.gold()))
+                await ctx.send(
+                    embed=discord.Embed(description=msg, color=discord.Color.gold())
+                )
             else:
                 await ctx.send(f"❌ Error: {msg}")
 

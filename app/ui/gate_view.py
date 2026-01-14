@@ -20,17 +20,14 @@ class GateActionView(discord.ui.View):
         self.guild_id = guild_id
         self.army_id = army_id
         self.defender_discord_id = defender_discord_id
+        # --- CRITICAL FIX: Initialize message to None ---
+        self.message = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.guild_permissions.administrator:
             return True
         if self.defender_discord_id and interaction.user.id == self.defender_discord_id:
             return True
-        if (
-            not self.defender_discord_id
-            and interaction.user.guild_permissions.administrator
-        ):
-            return True  # Let admins respond for NPCs
 
         await interaction.response.send_message(
             "You do not have permission to control this gate.", ephemeral=True
@@ -59,17 +56,13 @@ class GateActionView(discord.ui.View):
             text=f"Decision by {interaction.user.display_name}: Passage Granted"
         )
 
-        # --- KEY CHANGE: GRANT NOW SENDS THE REDIS EVENT ---
-        # This tells the backend to resume the army's march from its original destination.
         payload = {
             "type": "GATE_RESPONSE",
             "guild_id": self.guild_id,
             "army_id": self.army_id,
-            "action": "GRANT",  # Specifically granting passage
+            "action": "GRANT",
         }
         REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-        print(f"📡 Published GATE_RESPONSE (GRANT) for army {self.army_id} to Redis.")
-
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(
@@ -83,64 +76,63 @@ class GateActionView(discord.ui.View):
 
         embed = interaction.message.embeds[0]
         embed.color = discord.Color.dark_red()
-        embed.title = f"❌ HALTED: {embed.title}"
+        # Robust title update:
+        gate_name = embed.title.split("Gate Alert: ")[-1]
+        embed.title = f"❌ HALTED: {gate_name}"
         embed.set_footer(
             text=f"Decision by {interaction.user.display_name}: Passage Denied"
         )
 
-        # --- NEW: PUBLISH NOTIFICATION FOR THE ATTACKER ---
         payload = {
             "type": "PASSAGE_DENIED",
             "guild_id": self.guild_id,
             "army_id": self.army_id,
-            "gate_name": embed.title.split("HALTED: ⚔️ Gate Alert: ")[
-                -1
-            ],  # Extract gate name from title
+            "gate_name": gate_name,
             "denied_by": interaction.user.display_name,
         }
         REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-        print(
-            f"📡 Published PASSAGE_DENIED notification for army {self.army_id} to Redis."
-        )
-        # --- END OF NEW CODE ---
 
         await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_timeout(self) -> None:
         """
-        Executes when the view's timeout expires (e.g., after 1 hour).
-        Defaults to DENYING passage.
+        Safely handles view timeout.
+        FIXED: Uses hasattr/getattr to prevent AttributeError crashes.
         """
-        # The original message is stored on the view object
-        if not self.message:
+        # Safe attribute check
+        msg = getattr(self, "message", None)
+        if not msg:
             return
 
-        # Get the original embed to modify it
-        embed = self.message.embeds[0]
+        try:
+            # Refresh message state
+            msg = await msg.channel.fetch_message(msg.id)
+            embed = msg.embeds[0]
 
-        # Check if a button has already been clicked. If so, do nothing.
-        # We can check by seeing if the footer text was changed.
-        if "Decision by" in embed.footer.text:
-            return
+            # If already decided, stop.
+            if embed.footer.text and "Decision by" in embed.footer.text:
+                return
 
-        print(f"Gate Action for Army {self.army_id} timed out. Defaulting to DENY.")
+            self.disable_all_buttons()
+            gate_name = embed.title.split("Gate Alert: ")[-1]
+            embed.color = discord.Color.dark_red()
+            embed.title = f"❌ TIMED OUT: {gate_name}"
+            embed.set_footer(
+                text="No decision was made in time. Passage has been denied by default."
+            )
 
-        self.disable_all_buttons()
-        embed.color = discord.Color.dark_red()
-        embed.title = f"❌ TIMED OUT: {embed.title.replace('⚔️ Gate Alert: ', '')}"
-        embed.set_footer(
-            text="No decision was made in time. Passage has been denied by default."
-        )
+            payload = {
+                "type": "PASSAGE_DENIED",
+                "guild_id": self.guild_id,
+                "army_id": self.army_id,
+                "gate_name": gate_name,
+                "denied_by": "Default Gate Protocol",
+            }
+            REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
 
-        # Publish the same "PASSAGE_DENIED" event to notify the attacker
-        payload = {
-            "type": "PASSAGE_DENIED",
-            "guild_id": self.guild_id,
-            "army_id": self.army_id,
-            "gate_name": embed.title.split("TIMED OUT: ")[-1],
-            "denied_by": "Default Gate Protocol",  # A flavorful name for the denier
-        }
-        REDIS_CLIENT.publish("westeros_bot_events", json.dumps(payload))
-
-        # Edit the original message to show the final state
-        await self.message.edit(embed=embed, view=self)
+            await msg.edit(embed=embed, view=self)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            # Message was deleted or channel is gone, just stop the view.
+            pass
+        except Exception as e:
+            print(f"Error in GateActionView timeout: {e}")
