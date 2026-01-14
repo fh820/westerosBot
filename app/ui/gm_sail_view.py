@@ -44,6 +44,8 @@ class GMSailCargoModal(Modal):
                     "❌ Database Error.", ephemeral=True
                 )
 
+            submitted_cargo = self.cargo.value.strip() if self.cargo.value else None
+
             service = WarfareService(session)
             success, result, fog_msg = await service.sail_fleet(
                 game_id=game.game_id,
@@ -51,7 +53,7 @@ class GMSailCargoModal(Modal):
                 fleet_id=self.fleet.army_id,
                 ships_input=self.setup_data["ships"],
                 dest_name=self.setup_data["destination"],
-                units_input=self.cargo.value,
+                units_input=submitted_cargo,  # Modified
                 commander=self.commander.value or None,
                 gold_to_carry=self.setup_data["gold"],
                 waypoints=self.setup_data["waypoints"],

@@ -48,17 +48,21 @@ class SailCargoModal(discord.ui.Modal, title="Provision Crew & Cargo"):
             user = await session.scalar(
                 select(User).where(User.discord_id == interaction.user.id)
             )
+            submitted_cargo = self.cargo.value.strip() if self.cargo.value else None
+
             service = WarfareService(session)
             success, result, fog_msg = await service.sail_fleet(
                 game_id=game.game_id,
                 user_id=user.user_id,
                 fleet_id=self.fleet.army_id,
-                ships_input=ships_input,
-                dest_name=destination,
-                units_input=units_to_sail,
-                commander=commander_name,
-                gold_to_carry=gold_input,
-                waypoints=waypoints,
+                ships_input=self.setup_data["ships"],
+                dest_name=self.setup_data["destination"],
+                units_input=submitted_cargo,  # Modified
+                commander=self.commander.value or None,
+                gold_to_carry=self.setup_data["gold"],
+                waypoints=self.setup_data["waypoints"],
+                is_gm_override=False,
+                acting_house_id=None,
             )
             if not success:
                 return await interaction.followup.send(result, ephemeral=True)
