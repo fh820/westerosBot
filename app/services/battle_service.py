@@ -1145,6 +1145,117 @@ class BattleService:
                 f"🛡️ **Siege Repelled!**\nThe defenders of **{battle.fief.name}** held the walls. The siege is broken.",
             )
 
+    async def manual_casualty_calculation(
+        self, winner_id: int, loser_id: int, score_str: str, retreat_success: bool
+    ):
+        """
+        GM Tool: Applies casualties based on a raw score string (e.g., "5-0", "3-2")
+        without requiring a database Battle record.
+        """
+        # 1. Fetch Armies
+        stmt = (
+            select(Army)
+            .where(Army.army_id.in_([winner_id, loser_id]))
+            .options(selectinload(Army.house))
+        )
+        armies = (await self.session.execute(stmt)).scalars().all()
+        winner = next((a for a in armies if a.army_id == winner_id), None)
+        loser = next((a for a in armies if a.army_id == loser_id), None)
+
+        if not winner or not loser:
+            return False, "One or both armies not found."
+
+        # 2. Parse Score to get Loser's Score (to determine casualty severity)
+        try:
+            # Expected format "5-0", "4-1", "3-2" etc.
+            # We assume the first number is winner score, second is loser score, or vice versa.
+            # The logic only cares about the LOSER's score (lower score = higher casualties).
+            parts = score_str.replace("-", " ").split()
+            scores = [int(p) for p in parts]
+            loser_score_val = min(scores) # The lower number is the loser's score
+        except:
+            return False, "Invalid score format. Use '5-0' or '3-2'."
+
+        # 3. Determine Casualty Percentages
+        # Index: 0 (Total stomp) to 5 (Draw). 
+        # Score 5-0 -> Loser gets 0 -> Index 5 (Wait, usually 5-0 means loser got 0 points)
+        
+        # Let's align with auto-battle logic:
+        # If loser has 0 points, it was a massacre (High Index or Low Index depending on your table).
+        # Typically: 
+        # Score 0 (Massacre) -> High Casualties
+        # Score 4 (Close) -> Low Casualties
+        
+        # Map loser score (0-5) to your config index. 
+        # Assuming index 0 = 5-0 (Massacre), index 4 = 5-4 (Close call).
+        severity_index = max(0, min(5, 5 - loser_score_val))
+
+        # Configs (Hardcoded fallback if config dict missing)
+        WIN_PCT_TABLE = {0: 0.02, 1: 0.03, 2: 0.05, 3: 0.08, 4: 0.10, 5: 0.12}
+        LOS_PCT_TABLE = {0: 0.50, 1: 0.40, 2: 0.30, 3: 0.25, 4: 0.20, 5: 0.15}
+        
+        win_pct = WIN_PCT_TABLE.get(severity_index, 0.05)
+        los_pct = LOS_PCT_TABLE.get(severity_index, 0.30)
+
+        # 4. Apply Casualties Helper
+        from sqlalchemy.orm.attributes import flag_modified
+        
+        def apply_loss(army, pct):
+            if army.troop_count <= 0: return 0
+            loss = int(army.troop_count * pct)
+            if loss == 0 and army.troop_count > 0: loss = 1 # Minimum 1
+            
+            # Update troops
+            army.troop_count = max(0, army.troop_count - loss)
+            
+            # Update composition
+            if army.composition:
+                # Simple scaling
+                current_total = sum(army.composition.values())
+                if current_total > 0:
+                    ratio = army.troop_count / current_total
+                    new_comp = {k: int(v * ratio) for k, v in army.composition.items()}
+                    army.composition = new_comp
+                    flag_modified(army, "composition")
+
+            # Update Cargo (If fleet)
+            if army.army_type == "SEA" and army.cargo and army.cargo.get("troop_count", 0) > 0:
+                c_count = army.cargo["troop_count"]
+                c_loss = int(c_count * pct)
+                army.cargo["troop_count"] = max(0, c_count - c_loss)
+                flag_modified(army, "cargo")
+
+            return loss
+
+        w_losses = apply_loss(winner, win_pct)
+        l_losses = apply_loss(loser, los_pct)
+
+        # 5. Handle Retreat vs Destruction
+        fate_msg = ""
+        if not retreat_success:
+            # Army Destroyed
+            fate_msg = f"\n💀 **{loser.commander_name}** was unable to retreat and the army has been **Destroyed**."
+            loser.troop_count = 0
+            loser.composition = {}
+            if loser.army_type == "SEA":
+                loser.cargo = {}
+            # Delete army? Usually yes, or set to 0.
+            await self.session.delete(loser)
+        else:
+            # Army Retreats
+            fate_msg = f"\n🏳️ **{loser.commander_name}** has **Retreated** from the field."
+            loser.status = "RETREATING"
+        
+        winner.status = "IDLE" # Winner holds the field
+
+        await self.session.commit()
+
+        return True, (
+            f"**Score:** {score_str}\n"
+            f"**Winner:** {winner.commander_name} (Lost {w_losses})\n"
+            f"**Loser:** {loser.commander_name} (Lost {l_losses})\n"
+            f"{fate_msg}"
+        )
     async def occupy_fief(
         self, game_id, user_id, army_id, is_gm_override=False, acting_house_id=None
     ):
