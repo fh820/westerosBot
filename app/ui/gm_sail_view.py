@@ -22,7 +22,7 @@ class GMSailCargoModal(Modal):
     cargo = TextInput(
         label="Crew/Troops to Load",
         placeholder="1000, or inf:500 cav:200",
-        required=True,
+        required=False,
     )
     commander = TextInput(
         label="Commander Name (Optional)",
@@ -138,7 +138,7 @@ class GMSailSetupModal(Modal):
         self.add_item(self.destination)
         self.add_item(self.waypoints)
 
-     async def on_submit(self, interaction: discord.Interaction):
+    async def on_submit(self, interaction: discord.Interaction):
         gold_amount = 0
         if not self.is_gold_locked:
             try:

@@ -44,6 +44,24 @@ LOSER_CASUALTY_TABLE = {
     5: 0.90,
 }
 
+# SEA TABLES (20% reduction from Land values)
+SEA_WINNER_CASUALTY_TABLE = {
+    0: 0.20,
+    1: 0.16,
+    2: 0.12,
+    3: 0.08,
+    4: 0.05,
+    5: 0.04,
+}
+SEA_LOSER_CASUALTY_TABLE = {
+    0: 0.32,
+    1: 0.40,
+    2: 0.48,
+    3: 0.56,
+    4: 0.64,
+    5: 0.72,
+}
+
 
 class BattleService:
     def __init__(self, session: Session):
@@ -197,10 +215,10 @@ class BattleService:
         att_total = att_bp + (att_martial / 3.0) + att_bonus
         def_total = def_bp + (def_martial / 3.0) + def_bonus
 
-        if attacker.troop_count > defender.troop_count * 1.2:
-            att_total += 4
-        elif defender.troop_count > attacker.troop_count * 1.2:
-            def_total += 4
+        if attacker.troop_count > defender.troop_count * 2.0:
+            att_total += 10
+        elif defender.troop_count > attacker.troop_count * 2.0:
+            def_total += 10
 
         if att_total + def_total == 0:
             odds = 50
@@ -246,9 +264,9 @@ class BattleService:
                 defense.lower(), 0
             )
 
-        if attacker.troop_count > defender.troop_count * 1.2:
+        if attacker.troop_count > defender.troop_count * 2.0:
             att_bonus += 4
-        elif defender.troop_count > attacker.troop_count * 1.2:
+        elif defender.troop_count > attacker.troop_count * 2.0:
             def_bonus += 4
 
         att_total = att_bp + att_bonus
@@ -366,9 +384,9 @@ class BattleService:
         # --- START: NEW UNIFIED CASUALTY LOGIC ---
 
         # 1. Determine loss percentages
-        att_loss_pct = random.uniform(0.01, 0.03)
-        def_loss_pct = random.uniform(0.01, 0.03)
-        losing_side_bonus_pct = 0.02
+        att_loss_pct = 0
+        def_loss_pct = 0
+        losing_side_bonus_pct = 0
 
         if is_attacker_win is True:
             def_loss_pct += losing_side_bonus_pct
@@ -385,8 +403,8 @@ class BattleService:
 
             # FIX: To prevent rounding to zero on small fleets, ensure the loser
             # always loses at least one unit if they have any left.
-            if lost_round and unit_losses == 0 and army.troop_count > 0:
-                unit_losses = 1
+            # if lost_round and unit_losses == 0 and army.troop_count > 0:
+            #     unit_losses = 1
 
             # Cap losses at the total number of units
             unit_losses = min(unit_losses, army.troop_count)
@@ -540,8 +558,13 @@ class BattleService:
         score_index = max(0, min(5, 5 - loser_score))
 
         # Pull percentages from config (ensure these dicts exist in your class or global)
-        win_pct = getattr(self, "WINNER_CASUALTY_TABLE", {}).get(score_index, 0.05)
-        los_pct = getattr(self, "LOSER_CASUALTY_TABLE", {}).get(score_index, 0.45)
+        if battle.battle_type == "SEA_BATTLE":
+            win_pct = SEA_WINNER_CASUALTY_TABLE.get(score_index, 0.04)
+            los_pct = SEA_LOSER_CASUALTY_TABLE.get(score_index, 0.32)
+        else:
+            # Land or Siege
+            win_pct = WINNER_CASUALTY_TABLE.get(score_index, 0.05)
+            los_pct = LOSER_CASUALTY_TABLE.get(score_index, 0.45)
 
         # Fallback if config is missing
         if (
@@ -744,7 +767,7 @@ class BattleService:
         self, game_id, attacker_id, defender_id, ambush, defense
     ):
         """
-        Starts an auto-resolved battle. 
+        Starts an auto-resolved battle.
         UPDATED: Now uses 1:1 math with Manual Battle for Initial Odds.
         """
         stmt = (
@@ -761,7 +784,7 @@ class BattleService:
 
         # Determine type based on attacker (same as manual)
         battle_type = "SEA_BATTLE" if attacker.army_type == "SEA" else "LAND_BATTLE"
-        
+
         # 1. Calculate Base Power
         _, att_bp = self._calculate_army_bp(attacker)
         _, def_bp = self._calculate_army_bp(defender)
@@ -775,7 +798,7 @@ class BattleService:
         def_bonus = def_martial / 3.0
 
         # 4. Apply Terrain/Ambush Modifiers (Only for LAND)
-        # Note: battle_tasks.py currently passes "none", but this logic ensures 
+        # Note: battle_tasks.py currently passes "none", but this logic ensures
         # it handles it correctly if that changes in the future.
         if battle_type == "LAND_BATTLE":
             att_bonus += {"extreme": 15, "good": 10, "decent": 5, "failed": -5}.get(
@@ -883,12 +906,12 @@ class BattleService:
             battle.defender_score += 1
             battle.current_odds = max(5, battle.current_odds - 5)
 
-        att_loss_pct = random.uniform(0.01, 0.03)
-        def_loss_pct = random.uniform(0.01, 0.03)
+        att_loss_pct = 0
+        def_loss_pct = 0
         if is_attacker_win:
-            def_loss_pct += 0.02
+            def_loss_pct += 0
         else:
-            att_loss_pct += 0.02
+            att_loss_pct += 0
 
         att_losses = int(attacker_army.troop_count * att_loss_pct)
         def_losses = int(defender_army.troop_count * def_loss_pct)
@@ -1169,7 +1192,7 @@ class BattleService:
             # "5-0" -> [5, 0] -> loser gets 0
             parts = score_str.replace("-", " ").split()
             scores = [int(p) for p in parts]
-            loser_score_val = min(scores) 
+            loser_score_val = min(scores)
         except:
             return False, "Invalid score format. Use '5-0' or '3-2'."
 
@@ -1179,20 +1202,28 @@ class BattleService:
 
         # FIX: Use the Global tables defined at the top of the file
         # This ensures 5-0 results in 90% loss (index 5), not 15%.
-        win_pct = WINNER_CASUALTY_TABLE.get(severity_index, 0.05)
-        los_pct = LOSER_CASUALTY_TABLE.get(severity_index, 0.50)
+        is_sea = winner.army_type == "SEA"
+
+        if is_sea:
+            win_pct = SEA_WINNER_CASUALTY_TABLE.get(severity_index, 0.04)
+            los_pct = SEA_LOSER_CASUALTY_TABLE.get(severity_index, 0.32)
+        else:
+            win_pct = WINNER_CASUALTY_TABLE.get(severity_index, 0.05)
+            los_pct = LOSER_CASUALTY_TABLE.get(severity_index, 0.50)
 
         # 4. Apply Casualties Helper
         from sqlalchemy.orm.attributes import flag_modified
-        
+
         def apply_loss(army, pct):
-            if army.troop_count <= 0: return 0
+            if army.troop_count <= 0:
+                return 0
             loss = int(army.troop_count * pct)
-            if loss == 0 and army.troop_count > 0: loss = 1 
-            
+            if loss == 0 and army.troop_count > 0:
+                loss = 1
+
             # Update troops
             army.troop_count = max(0, army.troop_count - loss)
-            
+
             # Update composition
             if army.composition:
                 current_total = sum(army.composition.values())
@@ -1203,7 +1234,11 @@ class BattleService:
                     flag_modified(army, "composition")
 
             # Update Cargo (If fleet)
-            if army.army_type == "SEA" and army.cargo and army.cargo.get("troop_count", 0) > 0:
+            if (
+                army.army_type == "SEA"
+                and army.cargo
+                and army.cargo.get("troop_count", 0) > 0
+            ):
                 c_count = army.cargo["troop_count"]
                 c_loss = int(c_count * pct)
                 army.cargo["troop_count"] = max(0, c_count - c_loss)
@@ -1219,7 +1254,7 @@ class BattleService:
         if not retreat_success:
             # Army Destroyed
             fate_msg = f"\n💀 **{loser.commander_name}** was unable to retreat and the army has been **Destroyed**."
-            
+
             # Clean up pending interactions for the destroyed army
             await self.session.execute(
                 delete(PendingInteraction).where(
@@ -1229,14 +1264,16 @@ class BattleService:
                     )
                 )
             )
-            
+
             await self.session.delete(loser)
         else:
             # Army Retreats
-            fate_msg = f"\n🏳️ **{loser.commander_name}** has **Retreated** from the field."
+            fate_msg = (
+                f"\n🏳️ **{loser.commander_name}** has **Retreated** from the field."
+            )
             loser.status = "RETREATING"
-        
-        winner.status = "IDLE" 
+
+        winner.status = "IDLE"
 
         await self.session.commit()
 
@@ -1246,6 +1283,7 @@ class BattleService:
             f"**Loser:** {loser.commander_name} (Lost {l_losses})\n"
             f"{fate_msg}"
         )
+
     async def occupy_fief(
         self, game_id, user_id, army_id, is_gm_override=False, acting_house_id=None
     ):

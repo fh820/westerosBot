@@ -1,4 +1,3 @@
-
 import discord
 from discord.ext import commands
 from sqlalchemy import select
@@ -22,7 +21,7 @@ class SailCargoModal(discord.ui.Modal, title="Provision Crew & Cargo"):
         self.cargo = discord.ui.TextInput(
             label="Crew/Troops to Load",
             placeholder="1000, or inf:500 cav:200",
-            required=True,
+            required=False,
         )
         self.commander = discord.ui.TextInput(
             label="Commander Name (Optional)",
