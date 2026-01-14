@@ -1149,8 +1149,7 @@ class BattleService:
         self, winner_id: int, loser_id: int, score_str: str, retreat_success: bool
     ):
         """
-        GM Tool: Applies casualties based on a raw score string (e.g., "5-0", "3-2")
-        without requiring a database Battle record.
+        GM Tool: Applies casualties based on a raw score string (e.g., "5-0", "3-2").
         """
         # 1. Fetch Armies
         stmt = (
@@ -1165,37 +1164,23 @@ class BattleService:
         if not winner or not loser:
             return False, "One or both armies not found."
 
-        # 2. Parse Score to get Loser's Score (to determine casualty severity)
+        # 2. Parse Score
         try:
-            # Expected format "5-0", "4-1", "3-2" etc.
-            # We assume the first number is winner score, second is loser score, or vice versa.
-            # The logic only cares about the LOSER's score (lower score = higher casualties).
+            # "5-0" -> [5, 0] -> loser gets 0
             parts = score_str.replace("-", " ").split()
             scores = [int(p) for p in parts]
-            loser_score_val = min(scores) # The lower number is the loser's score
+            loser_score_val = min(scores) 
         except:
             return False, "Invalid score format. Use '5-0' or '3-2'."
 
         # 3. Determine Casualty Percentages
-        # Index: 0 (Total stomp) to 5 (Draw). 
-        # Score 5-0 -> Loser gets 0 -> Index 5 (Wait, usually 5-0 means loser got 0 points)
-        
-        # Let's align with auto-battle logic:
-        # If loser has 0 points, it was a massacre (High Index or Low Index depending on your table).
-        # Typically: 
-        # Score 0 (Massacre) -> High Casualties
-        # Score 4 (Close) -> Low Casualties
-        
-        # Map loser score (0-5) to your config index. 
-        # Assuming index 0 = 5-0 (Massacre), index 4 = 5-4 (Close call).
+        # Index Logic: 5-0 score = 5 (Massacre). 5-4 score = 1 (Close).
         severity_index = max(0, min(5, 5 - loser_score_val))
 
-        # Configs (Hardcoded fallback if config dict missing)
-        WIN_PCT_TABLE = {0: 0.02, 1: 0.03, 2: 0.05, 3: 0.08, 4: 0.10, 5: 0.12}
-        LOS_PCT_TABLE = {0: 0.50, 1: 0.40, 2: 0.30, 3: 0.25, 4: 0.20, 5: 0.15}
-        
-        win_pct = WIN_PCT_TABLE.get(severity_index, 0.05)
-        los_pct = LOS_PCT_TABLE.get(severity_index, 0.30)
+        # FIX: Use the Global tables defined at the top of the file
+        # This ensures 5-0 results in 90% loss (index 5), not 15%.
+        win_pct = WINNER_CASUALTY_TABLE.get(severity_index, 0.05)
+        los_pct = LOSER_CASUALTY_TABLE.get(severity_index, 0.50)
 
         # 4. Apply Casualties Helper
         from sqlalchemy.orm.attributes import flag_modified
@@ -1203,14 +1188,13 @@ class BattleService:
         def apply_loss(army, pct):
             if army.troop_count <= 0: return 0
             loss = int(army.troop_count * pct)
-            if loss == 0 and army.troop_count > 0: loss = 1 # Minimum 1
+            if loss == 0 and army.troop_count > 0: loss = 1 
             
             # Update troops
             army.troop_count = max(0, army.troop_count - loss)
             
             # Update composition
             if army.composition:
-                # Simple scaling
                 current_total = sum(army.composition.values())
                 if current_total > 0:
                     ratio = army.troop_count / current_total
@@ -1235,18 +1219,24 @@ class BattleService:
         if not retreat_success:
             # Army Destroyed
             fate_msg = f"\n💀 **{loser.commander_name}** was unable to retreat and the army has been **Destroyed**."
-            loser.troop_count = 0
-            loser.composition = {}
-            if loser.army_type == "SEA":
-                loser.cargo = {}
-            # Delete army? Usually yes, or set to 0.
+            
+            # Clean up pending interactions for the destroyed army
+            await self.session.execute(
+                delete(PendingInteraction).where(
+                    or_(
+                        PendingInteraction.army1_id == loser.army_id,
+                        PendingInteraction.army2_id == loser.army_id,
+                    )
+                )
+            )
+            
             await self.session.delete(loser)
         else:
             # Army Retreats
             fate_msg = f"\n🏳️ **{loser.commander_name}** has **Retreated** from the field."
             loser.status = "RETREATING"
         
-        winner.status = "IDLE" # Winner holds the field
+        winner.status = "IDLE" 
 
         await self.session.commit()
 
