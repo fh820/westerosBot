@@ -36,87 +36,99 @@ class EconomyService:
 
     async def execute_transfer(
         self,
-        source_house_id: int,
-        target_category: str,
-        target_id: int,
         amount: int,
-        source_fief_id: int = None,
+        source_type: str,
+        source_id: int,
+        target_type: str,
+        target_id: int,
     ):
         """
-        Executes a gold transfer.
-        - Deducts from a specific Fief (or the Source House's capital).
-        - Adds to an Army, specific Fief, or Target House's capital.
+        Generic Transfer Logic.
+        source_type: 'FIEF', 'ARMY', or 'HOUSE' (resolves to Capital)
+        target_type: 'FIEF', 'ARMY', or 'HOUSE' (resolves to Capital)
         """
-        # 1. Determine Source of Funds (Fief Treasury)
-        source_fief = None
+        if amount <= 0:
+            return False, "❌ Amount must be positive."
 
-        if source_fief_id:
-            source_fief = await self.session.get(Fief, source_fief_id)
-        else:
-            # Fallback: Find the Capital (First Fief) of the source house
+        # --- 1. RESOLVE SOURCE ---
+        source_obj = None
+        source_name = ""
+
+        if source_type == "FIEF":
+            source_obj = await self.session.get(Fief, source_id)
+            source_name = f"Fief {source_obj.name}" if source_obj else "Unknown"
+
+        elif source_type == "ARMY":
+            source_obj = await self.session.get(Army, source_id)
+            source_name = (
+                f"Army {source_obj.commander_name}" if source_obj else "Unknown"
+            )
+
+        elif source_type == "HOUSE":
+            # Resolve House ID to its Capital Fief
             stmt = (
                 select(Fief)
-                .where(Fief.owner_id == source_house_id)
+                .where(Fief.owner_id == source_id)
                 .order_by(Fief.fief_id.asc())
                 .limit(1)
             )
-            source_fief = (await self.session.execute(stmt)).scalars().first()
+            source_obj = (await self.session.execute(stmt)).scalars().first()
+            source_name = (
+                f"House Capital ({source_obj.name})" if source_obj else "Landless House"
+            )
 
-        if not source_fief:
-            return False, "❌ Source Fief not found or House has no lands."
+        if not source_obj:
+            return (
+                False,
+                f"❌ Source {source_type} (ID: {source_id}) not found or has no lands.",
+            )
 
-        # Check Balance
-        current_gold = source_fief.treasury or 0
+        # --- 2. CHECK FUNDS ---
+        current_gold = source_obj.treasury or 0
         if current_gold < amount:
             return (
                 False,
-                f"❌ Insufficient funds in **{source_fief.name}**. Available: {current_gold}.",
+                f"❌ Insufficient funds in **{source_name}**. Available: {current_gold} Gold.",
             )
 
-        # 2. Determine Target Destination
-        target_name = "Unknown"
-        target_found = False
+        # --- 3. RESOLVE TARGET ---
+        target_obj = None
+        target_name = ""
 
-        if target_category == "ARMY":
-            target_obj = await self.session.get(Army, target_id)
-            if target_obj:
-                target_obj.treasury = (target_obj.treasury or 0) + amount
-                target_name = target_obj.commander_name
-                target_found = True
-
-        elif target_category == "FIEF":
+        if target_type == "FIEF":
             target_obj = await self.session.get(Fief, target_id)
-            if target_obj:
-                target_obj.treasury = (target_obj.treasury or 0) + amount
-                target_name = target_obj.name
-                target_found = True
+            target_name = f"Fief {target_obj.name}" if target_obj else "Unknown"
 
-        elif target_category == "HOUSE":
-            # Deposit into Target House's Capital
+        elif target_type == "ARMY":
+            target_obj = await self.session.get(Army, target_id)
+            target_name = (
+                f"Army {target_obj.commander_name}" if target_obj else "Unknown"
+            )
+
+        elif target_type == "HOUSE":
+            # Resolve House ID to its Capital Fief
             stmt = (
                 select(Fief)
                 .where(Fief.owner_id == target_id)
                 .order_by(Fief.fief_id.asc())
                 .limit(1)
             )
-            target_fief = (await self.session.execute(stmt)).scalars().first()
-            if target_fief:
-                target_fief.treasury = (target_fief.treasury or 0) + amount
-                target_name = f"{target_fief.name} (Capital)"
-                target_found = True
-            else:
-                return False, "❌ Target House has no lands to receive gold."
+            target_obj = (await self.session.execute(stmt)).scalars().first()
+            target_name = (
+                f"House Capital ({target_obj.name})" if target_obj else "Landless House"
+            )
 
-        if not target_found:
-            return False, "❌ Target destination not found."
+        if not target_obj:
+            return False, f"❌ Target {target_type} (ID: {target_id}) not found."
 
-        # 3. Execute Deduction
-        source_fief.treasury -= amount
+        # --- 4. EXECUTE ---
+        source_obj.treasury = current_gold - amount
+        target_obj.treasury = (target_obj.treasury or 0) + amount
 
         await self.session.commit()
         return (
             True,
-            f"✅ Transferred **{amount} Gold** from **{source_fief.name}** to **{target_name}**.",
+            f"✅ Transferred **{amount} Gold** from **{source_name}** to **{target_name}**.",
         )
 
     async def run_fiscal_year(self, game_id: int) -> list[str]:
