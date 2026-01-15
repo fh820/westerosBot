@@ -87,6 +87,7 @@ class GMSailContinueView(View):
         await interaction.response.send_modal(modal)
         self.stop()
         button.disabled = True
+        self.children[1].disabled = True
         await interaction.edit_original_response(view=self)
 
     # --- NEW BUTTON ---
