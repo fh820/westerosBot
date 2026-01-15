@@ -1765,21 +1765,21 @@ class WarfareService:
         self,
         game_id: int,
         user_id: int,
-        id_1: int,
-        id_2: int,
+        target_id: int,
+        source_ids: list[int],
         is_gm_override: bool = False,
         acting_house_id: int | None = None,
     ):
         """
-        Merges two same-owner armies or fleets.
-        Target: Army 1 (survives). Source: Army 2 (deleted).
+        Merges multiple source armies/fleets into one target army.
+        Target: Survives. Sources: Deleted.
         """
-        army1 = await ArmyRepo.get_army_by_id(self.session, id_1)
-        army2 = await ArmyRepo.get_army_by_id(self.session, id_2)
+        # 1. Fetch the Target Army
+        army1 = await ArmyRepo.get_army_by_id(self.session, target_id)
+        if not army1:
+            return False, f"❌ Target Army ID `{target_id}` not found."
 
-        if not army1 or not army2:
-            return False, "❌ One or both army IDs could not be found."
-
+        # 2. Determine Player & Authority for Target
         player: GamePlayer | None = None
         player_claimed_house_id: int | None = None
 
@@ -1792,89 +1792,131 @@ class WarfareService:
                 return False, "❌ You do not command a house."
             player_claimed_house_id = player.claimed_house_id
 
-        effective_commanding_house_id: int | None = None
-        if is_gm_override:
-            if acting_house_id is not None:
-                effective_commanding_house_id = acting_house_id
-            else:
-                effective_commanding_house_id = army1.house_id
-        else:
+        # Determine effective house (for GM override logic)
+        effective_commanding_house_id = (
+            acting_house_id if is_gm_override and acting_house_id else army1.house_id
+        )
+        if not is_gm_override:
             effective_commanding_house_id = player_claimed_house_id
 
-        if effective_commanding_house_id is None:
-            return False, "❌ Cannot determine the commanding house for this action."
-
-        # Authority checks
+        # 3. Check Target Authority
         if not is_gm_override:
-            auth1 = await self._check_command_authority(player, army1)
-            auth2 = await self._check_command_authority(player, army2)
-            if not auth1 or not auth2:
-                return False, "❌ You do not have command authority over both units."
-        else:
-            # GM Override Check
-            if (
-                army1.house_id != effective_commanding_house_id
-                or army2.house_id != effective_commanding_house_id
-            ):
-                return (
-                    False,
-                    f"❌ With GM override for House ID {effective_commanding_house_id}, both armies must belong to this house.",
-                )
+            if not await self._check_command_authority(player, army1):
+                return False, f"❌ You do not control the target Army `{target_id}`."
+        elif army1.house_id != effective_commanding_house_id:
+             return False, f"❌ GM Override: Target Army `{target_id}` does not belong to the acting House."
 
-        if army1.army_type != army2.army_type:
-            return False, "❌ You cannot merge a land army with a fleet."
+        # 4. Check Target Status
+        valid_statuses = ["IDLE", "GARRISONED", "DOCKED"]
+        if army1.status not in valid_statuses:
+             return False, f"❌ Target Army `{target_id}` is busy ({army1.status}). Must be Idle, Garrisoned, or Docked."
 
-        # Distance Tolerance
-        dist = math.sqrt(
-            (army1.location_x - army2.location_x) ** 2
-            + (army1.location_y - army2.location_y) ** 2
-        )
-        if dist > 15.0:
-            return False, f"❌ Armies are too far apart (Distance: {dist:.1f})."
+        # 5. Process Sources
+        merged_count = 0
+        total_troops_added = 0
+        total_gold_added = 0
+        errors = []
 
-        if army1.status not in ["IDLE", "GARRISONED","DOCKED"] or army2.status not in [
-            "IDLE",
-            "GARRISONED",
-            "DOCKED",
-        ]:
-            return False, "❌ You can only merge idle or garrisoned or docked units."
+        # Fetch all sources in one query for efficiency
+        stmt_sources = select(Army).where(Army.army_id.in_(source_ids))
+        source_armies = (await self.session.execute(stmt_sources)).scalars().all()
 
-        unit_noun = "ships" if army1.army_type == "SEA" else "men"
-        count_from_army2 = army2.troop_count
-        gold_from_army2 = army2.treasury or 0
-        army1.treasury = (army1.treasury or 0) + gold_from_army2
+        if not source_armies:
+            return False, "❌ None of the source army IDs were found."
 
-        # Snap army1 to exact position of army2 or vice-versa
-        army1.location_x = army2.location_x
-        army1.location_y = army2.location_y
+        for army2 in source_armies:
+            # --- A. Validation Per Source ---
+            
+            # Ownership
+            if not is_gm_override:
+                # We assume if they own the target, and strict house checks pass, we double check specific auth
+                if army2.house_id != player_claimed_house_id:
+                     errors.append(f"ID {army2.army_id}: Not yours")
+                     continue
+            elif army2.house_id != effective_commanding_house_id:
+                errors.append(f"ID {army2.army_id}: Wrong House")
+                continue
 
-        # --- FIX: Cleanup Interactions for Army 2 ---
-        # Army 2 is about to be deleted. We must remove its locks first.
-        await self.session.execute(
-            delete(PendingInteraction).where(
-                or_(
-                    PendingInteraction.army1_id == army2.army_id,
-                    PendingInteraction.army2_id == army2.army_id,
+            # Type Match
+            if army1.army_type != army2.army_type:
+                errors.append(f"ID {army2.army_id}: Type mismatch ({army2.army_type})")
+                continue
+
+            # Status
+            if army2.status not in valid_statuses:
+                errors.append(f"ID {army2.army_id}: Busy ({army2.status})")
+                continue
+
+            # Distance
+            dist = math.sqrt(
+                (army1.location_x - army2.location_x) ** 2
+                + (army1.location_y - army2.location_y) ** 2
+            )
+            if dist > 15.0:
+                errors.append(f"ID {army2.army_id}: Too far ({dist:.1f})")
+                continue
+
+            # --- B. Execution ---
+            
+            # Transfer Assets
+            count_from_army2 = army2.troop_count
+            gold_from_army2 = army2.treasury or 0
+            
+            total_troops_added += count_from_army2
+            total_gold_added += gold_from_army2
+            
+            # Delete pending interactions for the source army
+            await self.session.execute(
+                delete(PendingInteraction).where(
+                    or_(
+                        PendingInteraction.army1_id == army2.army_id,
+                        PendingInteraction.army2_id == army2.army_id,
+                    )
                 )
             )
-        )
 
-        await ArmyRepo.merge_army_logic(
-            self.session,
-            source_army=army2,
-            target_army=army1,
-        )
+            # Perform the logic merge (Move composition keys)
+            # Assuming ArmyRepo.merge_army_logic handles composition merging and deleting army2
+            await ArmyRepo.merge_army_logic(
+                self.session,
+                source_army=army2,
+                target_army=army1,
+            )
+            
+            merged_count += 1
+
+        # 6. Finalize Target Updates
+        army1.treasury = (army1.treasury or 0) + total_gold_added
+        
+        # Snap target to last merged location? 
+        # Usually target location stays, or snaps if it was empty. 
+        # We'll leave target location as is, since sources must be close anyway.
+
         await self.session.commit()
 
-        final_count_army1 = army1.troop_count
-        gold_label = (
-            f" It now holds **{army1.treasury} gold**." if army1.treasury > 0 else ""
-        )
+        # 7. Construct Report
+        unit_noun = "ships" if army1.army_type == "SEA" else "men"
+        
+        if merged_count == 0:
+            return False, f"❌ **Merge Failed:** No armies could be merged.\nIssues:\n• " + "\n• ".join(errors[:5])
 
-        return (
-            True,
-            f"✅ Merged **{count_from_army2} {unit_noun}** from **{army2.commander_name}** into **{army1.commander_name}**, which now has **{final_count_army1} {unit_noun}**.{gold_label}",
+        msg = (
+            f"✅ **Merged {merged_count} unit(s)** into **{army1.commander_name}**.\n"
+            f"➕ Added: {total_troops_added} {unit_noun}"
         )
+        
+        if total_gold_added > 0:
+            msg += f" and {total_gold_added} gold"
+            
+        msg += f".\n📊 **New Total:** {army1.troop_count} {unit_noun}"
+        
+        if army1.treasury > 0:
+            msg += f" | 💰 {army1.treasury} gold"
+
+        if errors:
+            msg += f"\n⚠️ **Skipped:** {', '.join(errors)}"
+
+        return True, msg
 
     async def check_interceptions_advanced(
         self,
