@@ -2987,7 +2987,7 @@ class WarfareService:
             total_men_in_cargo = 0
             cargo_payload = None
 
-            # Look for ground army to pick up
+            # Look for ground army to pick up at the same location
             stmt_land = select(Army).where(
                 Army.game_id == game_id,
                 Army.house_id == effective_house_id,
@@ -2998,15 +2998,37 @@ class WarfareService:
             )
             ground_army = (await self.session.execute(stmt_land)).scalars().first()
 
-            if units_input is not None and units_input.lower() != "load":
-                # CASE A: Manually loading specific units from a garrison
+            # --- REFINED CARGO HANDLING LOGIC: Prioritize "empty" first ---
+
+            # CASE 1: User explicitly chose to sail empty (e.g., from a button)
+            if units_input == "empty":
+                total_men_in_cargo = 0
+                cargo_payload = None
+                # If a commander was provided, apply it to the fleet directly, not cargo
+                if commander:
+                    source_fleet.commander_name = commander
+                commander = None  # Clear for cargo_payload if it were used
+
+            # CASE 2: Fleet already has cargo (e.g., continuing a journey), and no new `units_input` specified
+            # This path is usually hit when `SailSetupModal` is submitted for a fleet
+            # that already has cargo, and `units_input` is passed as `None`.
+            elif source_fleet.cargo and source_fleet.cargo.get("troop_count", 0) > 0 and units_input is None:
+                total_men_in_cargo = source_fleet.cargo.get("troop_count", 0)
+                cargo_payload = copy.deepcopy(source_fleet.cargo)
+                # If a commander was explicitly provided, it overrides the cargo's commander
+                if commander: # If we have an explicit commander, use it for the cargo
+                    cargo_payload["commander"] = commander
+                commander = cargo_payload.get("commander") # Use existing or new commander from cargo
+
+            # CASE 3: User manually provided `units_input` (e.g., from modal text input)
+            elif units_input is not None:
                 if not ground_army:
                     return (
                         False,
-                        "❌ No land troops found at this location to load.",
+                        "❌ No land troops found at this location to load the specified units.",
                         None,
                     )
-
+                
                 parsed_men, requested_comp = await self._parse_units_for_sailing(
                     units_input
                 )
@@ -3031,25 +3053,23 @@ class WarfareService:
                     "troop_count": parsed_men,
                     "composition": requested_comp,
                 }
-
-            elif source_fleet.cargo and source_fleet.cargo.get("troop_count", 0) > 0:
-                # CASE B: Maintain existing cargo (Continuing a journey)
-                total_men_in_cargo = source_fleet.cargo.get("troop_count", 0)
-                cargo_payload = copy.deepcopy(source_fleet.cargo)
-
+            
+            # CASE 4: No explicit `units_input`, no existing cargo, but there's a ground army. Auto-pickup.
             elif ground_army:
-                # CASE C: Auto-pickup everything
                 if ground_army.troop_count > ship_count * ship_capacity:
                     raise ValueError(
                         "Not enough ship capacity to pick up the entire army."
                     )
                 total_men_in_cargo = ground_army.troop_count
                 cargo_payload = {
-                    "commander": ground_army.commander_name,
+                    "commander": commander or ground_army.commander_name,
                     "troop_count": ground_army.troop_count,
                     "composition": ground_army.composition,
                 }
                 await self.session.delete(ground_army)
+            
+            # Else (if none of the above): `total_men_in_cargo` remains 0, `cargo_payload` remains None.
+            # This is implicitly sailing empty if no ground_army and no prior cargo and no manual input.
 
         except ValueError as e:
             return False, f"❌ Input Error: {e}", None
