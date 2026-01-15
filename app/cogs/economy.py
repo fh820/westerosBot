@@ -248,19 +248,49 @@ class EconomyCog(commands.Cog):
 
     @commands.command(
         name="buy",
-        help='Hire mercenaries at a fief you own. Usage: !buy "Fief Name" [type] [amount]',
+        help="Hire mercenaries at a fief you own. Usage: !buy [Fief Name] [type] [amount]",
     )
-    async def buy(self, ctx, fief_name: str, unit_type: str, amount: int):
-        unit_type = unit_type.lower()
+    async def buy(self, ctx, *, args: str = None):
+        """
+        Hire mercenaries. Handles multi-word fief names automatically.
+        Usage: !buy Storm's End Infantry 200
+        """
+        if not args:
+            return await ctx.send("❌ Usage: `!buy [Fief Name] [Unit Type] [Amount]`")
+
+        # 1. Parse Arguments manually from the right side
+        # args = "Storms End Infantry 2000" -> ["Storms End", "Infantry", "2000"]
+        try:
+            parts = args.rsplit(maxsplit=2)
+            if len(parts) != 3:
+                raise ValueError
+
+            fief_name_raw, unit_type_raw, amount_raw = parts
+
+            if not amount_raw.isdigit():
+                return await ctx.send(
+                    f"❌ Amount must be a number, not '{amount_raw}'."
+                )
+
+            amount = int(amount_raw)
+            unit_type = unit_type_raw.lower()
+            fief_name = fief_name_raw.strip()
+
+        except ValueError:
+            return await ctx.send(
+                "❌ Usage: `!buy [Fief Name] [Unit Type] [Amount]`\nExample: `!buy Storm's End Infantry 100`"
+            )
+
+        # 2. Logic Validation
         if amount <= 0:
             return await ctx.send("❌ Amount must be greater than zero.")
         if unit_type not in VALID_UNITS:
             return await ctx.send(
-                f"❌ Invalid unit type. Must be one of: `{', '.join(VALID_UNITS)}`"
+                f"❌ Invalid unit type: `{unit_type_raw}`.\nMust be one of: `{', '.join(VALID_UNITS)}`"
             )
 
         async with get_session() as session:
-            # 1. Setup Context
+            # 3. Setup Context
             player_house = await self._get_player_house(session, ctx)
             if not player_house:
                 return await ctx.send("❌ You do not have a house in this game.")
@@ -268,22 +298,22 @@ class EconomyCog(commands.Cog):
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             game_id = game.game_id if game else None
 
-            # 2. Find Fief
+            # 4. Find Fief
             fief = await session.scalar(
                 select(Fief).where(Fief.game_id == game_id, Fief.name.ilike(fief_name))
             )
             if not fief:
                 return await ctx.send(
-                    f"❌ Fief named `{fief_name}` not found in this game."
+                    f"❌ Fief named `{fief_name}` not found.\n*Check spelling and apostrophes (e.g., Storm's End)*"
                 )
             if fief.owner_id != player_house.house_id:
                 return await ctx.send(f"❌ You do not own {fief.name}.")
 
-            # 3. Calculate Costs
+            # 5. Calculate Costs
             gold_cost = amount * UNIT_PRICES[unit_type]["buy"]
             manpower_cost = amount * UNIT_PRICES[unit_type]["manpower_cost"]
 
-            # 4. Validate Funds (LOCAL FIEF TREASURY) & Manpower (GLOBAL HOUSE POOL)
+            # 6. Validate Funds (LOCAL FIEF TREASURY) & Manpower (GLOBAL HOUSE POOL)
             current_fief_gold = fief.treasury or 0
 
             if current_fief_gold < gold_cost:
@@ -298,7 +328,7 @@ class EconomyCog(commands.Cog):
                     f"Required: {manpower_cost} | Available: {player_house.manpower}"
                 )
 
-            # 5. Find or Create Garrison/Fleet
+            # 7. Find or Create Garrison/Fleet
             army_type = "SEA" if unit_type == "ships" else "LAND"
             garrison = await session.scalar(
                 select(Army).where(
@@ -331,7 +361,7 @@ class EconomyCog(commands.Cog):
                 session.add(garrison)
                 await session.flush()
 
-            # 6. Execute Transaction
+            # 8. Execute Transaction
             fief.treasury -= gold_cost  # Deduct from FIEF
             if manpower_cost > 0:
                 player_house.manpower -= manpower_cost  # Deduct from HOUSE
@@ -1525,31 +1555,57 @@ class EconomyCog(commands.Cog):
             await ctx.send(embed=embed)
 
     @gm_econ.command(name="buy")
-    async def gm_buy(
-        self,
-        ctx,
-        house_identifier: str,
-        fief_name: str,
-        unit_type: str,
-        amount: int,
-        *flags,
-    ):
+    async def gm_buy(self, ctx, *, args: str = None):
         """
         GM: Recruit units for a House (Deducts Gold/Manpower unless 'free').
         Usage:
-        !gm_econ buy Stark Winterfell infantry 100
-        !gm_econ buy Stark Winterfell infantry 100 free
+        !gm_econ buy [House] [Fief Name] [Unit] [Amount] (free)
+        Example: !gm_econ buy Stark Winterfell infantry 100
         """
-        unit_type = unit_type.lower()
+        if not args:
+            return await ctx.send(
+                "❌ Usage: `!gm_econ buy [House] [Fief] [Unit] [Amount] (free)`"
+            )
+
+        # Parsing Logic
+        parts = args.split()
+
+        # Check for flags (free)
+        is_free = False
+        if parts and parts[-1].lower() == "free":
+            is_free = True
+            parts.pop()
+
+        if len(parts) < 4:
+            return await ctx.send(
+                "❌ Usage: `!gm_econ buy [House] [Fief] [Unit] [Amount] (free)`"
+            )
+
+        # Extract strict fields from edges
+        amount_raw = parts.pop()
+        unit_type_raw = parts.pop()
+
+        # House is first
+        house_identifier = parts.pop(0)
+
+        # Fief is whatever is left in the middle
+        fief_name = " ".join(parts)
+
+        if not fief_name:
+            return await ctx.send("❌ Fief name missing.")
+
+        # Validation
+        if not amount_raw.isdigit():
+            return await ctx.send("❌ Amount must be a positive integer.")
+        amount = int(amount_raw)
+
+        unit_type = unit_type_raw.lower()
         if amount <= 0:
             return await ctx.send("❌ Amount must be positive.")
         if unit_type not in VALID_UNITS:
             return await ctx.send(
                 f"❌ Invalid unit type. Options: `{', '.join(VALID_UNITS)}`"
             )
-
-        # Check for 'free' flag
-        is_free = "free" in [f.lower() for f in flags]
 
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
