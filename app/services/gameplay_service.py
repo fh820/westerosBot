@@ -353,6 +353,7 @@ class GameplayService:
                 selectinload(House.fiefs),
                 selectinload(House.armies),
                 selectinload(House.dynasty),
+                selectinload(House.liege),
             )
         )
         loaded_house = (await self.session.execute(loaded_house_stmt)).scalars().first()
