@@ -12,6 +12,7 @@ from app.checks import is_in_house_channel
 import datetime
 import re
 from app.services.common import slugify
+import time
 
 
 class GameplayCog(commands.Cog):
@@ -392,9 +393,6 @@ class GameplayCog(commands.Cog):
         Displays your character stats, treasury, lands, and armies in your private channel.
         For GMs, displays a paginated list of all houses and their details.
         """
-        import time
-
-        # --- BENCHMARK START ---
         start_time = time.perf_counter()
 
         async with get_session() as session:
@@ -405,8 +403,6 @@ class GameplayCog(commands.Cog):
             # --- Time the data-fetching part ---
             db_start_time = time.perf_counter()
 
-            # The optimized query we built before is still good.
-            # We just need to make sure we use the data we fetch.
             stmt = (
                 select(GamePlayer)
                 .join(User)
@@ -440,12 +436,31 @@ class GameplayCog(commands.Cog):
             )
             fief_gold_total = sum((f.treasury or 0) for f in house.fiefs)
             army_gold_total = sum((a.treasury or 0) for a in house.armies)
-            # house.treasury might still have gold from trade deals or recent transfers before they are moved to fiefs
+
             total_house_wealth = (
                 (house.treasury or 0) + fief_gold_total + army_gold_total
             )
 
-            # --- DATA PREPARATION (Updated for Fief/Army Gold) ---
+            # --- CALCULATE INCOME ---
+            income_mods = game.income_modifiers or {}
+            mod_global = income_mods.get("global", 1.0)
+            mod_regions = income_mods.get("regions", {})
+            mod_houses = income_mods.get("houses", {})
+
+            calculated_income = 0
+            for f in house.fiefs:
+                if not f.is_ruined:
+                    # Modifier Logic (matches EconomyService)
+                    modifier = mod_global
+                    if f.region and f.region in mod_regions:
+                        modifier = mod_regions[f.region]
+                    if str(house.house_id) in mod_houses:
+                        modifier = mod_houses[str(house.house_id)]
+
+                    integration = f.integration if f.integration is not None else 1.0
+                    calculated_income += int(f.base_income * integration * modifier)
+
+            # --- DATA PREPARATION ---
             data = {
                 "house_name": house.name,
                 "house_id": house.house_id,
@@ -453,10 +468,9 @@ class GameplayCog(commands.Cog):
                 "parent_house": house.liege.name if house.liege else None,
                 "color": house.color_hex,
                 "treasury": total_house_wealth,
-                "income": "N/A",
+                "income": calculated_income,  # UPDATED
                 "manpower": house.manpower,
                 "manpower_cap": house.manpower_cap,
-                # UPDATE 1: Include Fief Treasury
                 "fiefs": [
                     {"name": f.name, "gold": f.treasury or 0} for f in house.fiefs
                 ],
@@ -481,14 +495,13 @@ class GameplayCog(commands.Cog):
                             army.cargo.get("troop_count", 0) if army.cargo else 0
                         ),
                         "departure_time": army.departure_time,
-                        # UPDATE 2: Include Army Treasury
                         "gold": army.treasury or 0,
                     }
                     for army in house.armies
                 ],
             }
 
-            # --- SECURITY CHECK (Unchanged) ---
+            # --- SECURITY CHECK ---
             is_gm = ctx.author.guild_permissions.administrator
             if not is_gm and ctx.channel.name not in ["bot-testing", "gm-requests"]:
                 if game_player.private_channel_id:
