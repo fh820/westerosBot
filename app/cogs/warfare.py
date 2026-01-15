@@ -2938,6 +2938,73 @@ class WarfareCog(commands.Cog):
             else:
                 await ctx.send(f"❌ Error: {msg}")
 
+    @commands.command(name="set_commander")
+    @commands.check(is_in_house_channel)
+    async def set_commander(self, ctx, army_id: int, *, name: str):
+        """
+        Rename the commander of one of your armies.
+        Usage: !set_commander [ArmyID] [New Name]
+        Example: !set_commander 123 Ser Jaime Lannister
+        """
+        if len(name) > 64:
+            return await ctx.send("❌ Name is too long (max 64 characters).")
+
+        async with get_session() as session:
+            # 1. Get Active Game
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            # 2. Get Player's House
+            user = await session.scalar(
+                select(User).where(User.discord_id == ctx.author.id)
+            )
+            if not user:
+                return await ctx.send("❌ You are not registered.")
+
+            stmt = (
+                select(GamePlayer)
+                .where(
+                    GamePlayer.user_id == user.user_id,
+                    GamePlayer.game_id == game.game_id,
+                )
+                .options(selectinload(GamePlayer.house))
+            )
+            player = await session.scalar(stmt)
+
+            if not player or not player.house:
+                return await ctx.send("❌ You do not command a House.")
+
+            # 3. Get Army
+            army = await session.get(Army, army_id)
+            if not army:
+                return await ctx.send(f"❌ Army ID `{army_id}` not found.")
+
+            # 4. Verify Ownership
+            if army.house_id != player.house.house_id:
+                return await ctx.send("❌ You do not own this army.")
+
+            # 5. Execute Name Change
+            old_name = army.commander_name
+            army.commander_name = name
+
+            await session.commit()
+
+            # 6. Response
+            embed = discord.Embed(
+                title="⚔️ Commander Updated",
+                description=f"You have appointed **{name}** to lead Army **#{army.army_id}**.",
+                color=player.house.color_hex or discord.Color.blue(),
+            )
+            embed.add_field(name="Previous Commander", value=old_name, inline=True)
+            embed.add_field(
+                name="Current Location",
+                value=f"({army.location_x}, {army.location_y})",
+                inline=True,
+            )
+
+            await ctx.send(embed=embed)
+
 
 async def setup(bot):
     await bot.add_cog(WarfareCog(bot))
