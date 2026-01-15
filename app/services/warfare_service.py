@@ -1832,11 +1832,12 @@ class WarfareService:
         if dist > 15.0:
             return False, f"❌ Armies are too far apart (Distance: {dist:.1f})."
 
-        if army1.status not in ["IDLE", "GARRISONED"] or army2.status not in [
+        if army1.status not in ["IDLE", "GARRISONED","DOCKED"] or army2.status not in [
             "IDLE",
             "GARRISONED",
+            "DOCKED",
         ]:
-            return False, "❌ You can only merge idle or garrisoned units."
+            return False, "❌ You can only merge idle or garrisoned or docked units."
 
         unit_noun = "ships" if army1.army_type == "SEA" else "men"
         count_from_army2 = army2.troop_count
