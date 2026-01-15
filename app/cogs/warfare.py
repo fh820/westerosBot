@@ -2450,8 +2450,31 @@ class WarfareCog(commands.Cog):
 
     @gm_war.command(name="merge")
     @commands.check(is_gm)
-    async def gm_merge(self, ctx, target_house_id: int, army_id_1: int, army_id_2: int):
-        """GM: Merge two of an NPC house's armies. Usage: !gm_war merge [HouseID] [ArmyID1] [ArmyID2]"""
+    async def gm_merge(
+        self,
+        ctx,
+        target_house_id: int,
+        target_id: int,
+        source_ids: commands.Greedy[int],
+    ):
+        """
+        GM: Merge multiple armies for a specific NPC/Player house.
+        Usage: !gm_war merge [HouseID] [TargetArmyID] [SourceID_1] [SourceID_2] ...
+        Example: !gm_war merge 5 100 101 102 (Merges 101/102 into 100 for House 5)
+        """
+        if not source_ids:
+            return await ctx.send(
+                "❌ Usage: `!gm_war merge [HouseID] [TargetID] [SourceID_1] ...`"
+            )
+
+        # Deduplicate and ensure target is not in sources
+        source_ids = list(set(source_ids))
+        if target_id in source_ids:
+            source_ids.remove(target_id)
+
+        if not source_ids:
+            return await ctx.send("❌ You cannot merge an army into itself.")
+
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
@@ -2467,8 +2490,8 @@ class WarfareCog(commands.Cog):
             success, msg = await service.merge_armies(
                 game_id=game.game_id,
                 user_id=gm_user_obj.user_id,
-                id_1=army_id_1,
-                id_2=army_id_2,
+                target_id=target_id,
+                source_ids=source_ids,
                 is_gm_override=True,
                 acting_house_id=target_house_id,
             )
