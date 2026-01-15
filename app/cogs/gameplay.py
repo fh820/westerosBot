@@ -418,6 +418,7 @@ class GameplayCog(commands.Cog):
                         selectinload(House.fiefs),
                         selectinload(House.armies),
                         selectinload(House.characters),
+                        selectinload(House.liege),
                     )
                 )
             )
