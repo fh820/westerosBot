@@ -698,6 +698,7 @@ def resolve_player_interaction(interaction_id: int):
 
     session = get_sync_session()
     try:
+        session.begin()
         interaction = (
             session.query(PendingInteraction)
             .options(
@@ -705,10 +706,13 @@ def resolve_player_interaction(interaction_id: int):
                 selectinload(PendingInteraction.army2),
             )
             .filter(PendingInteraction.id == interaction_id)
+            .with_for_update() # <-- Acquire a row-level lock here
             .first()
         )
 
         if not interaction or interaction.status != "PENDING":
+            print(f"DEBUG: Interaction {interaction_id} skipped. Not found or status is '{interaction.status if interaction else 'N/A'}' (expected 'PENDING').")
+            session.commit() # Release the lock
             return
         if not interaction.army1 or not interaction.army2:
             interaction.status = "CANCELLED"
