@@ -1667,8 +1667,23 @@ class WarfareCog(commands.Cog):
 
     @commands.command(name="merge")
     @commands.check(is_in_house_channel)
-    async def merge(self, ctx, army_id_1: int, army_id_2: int):
-        """Merges two armies. Usage: !merge [ID1] [ID2]"""
+    async def merge(self, ctx, target_id: int, source_ids: commands.Greedy[int]):
+        """
+        Merges one or more armies into a target army.
+        Usage: !merge [Target_ID] [Source_ID_1] [Source_ID_2] ...
+        Example: !merge 100 101 102 (Merges 101 and 102 into 100)
+        """
+        if not source_ids:
+            return await ctx.send("❌ Usage: `!merge [Target_ID] [Source_ID_1] ...`")
+
+        # Convert Greedy list to a standard list and remove duplicates/target_id
+        source_ids = list(set(source_ids))
+        if target_id in source_ids:
+            source_ids.remove(target_id)
+
+        if not source_ids:
+            return await ctx.send("❌ You cannot merge an army into itself.")
+
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             stmt = select(User).where(User.discord_id == ctx.author.id)
@@ -1676,7 +1691,7 @@ class WarfareCog(commands.Cog):
 
             service = WarfareService(session)
             success, msg = await service.merge_armies(
-                game.game_id, user.user_id, army_id_1, army_id_2
+                game.game_id, user.user_id, target_id, source_ids
             )
             await ctx.send(msg)
 
