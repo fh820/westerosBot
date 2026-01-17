@@ -23,6 +23,8 @@ from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 from app.services.warfare_service import WarfareService
 from app.services.common import slugify
+import os
+import json
 
 
 class AdminCog(commands.Cog):
@@ -161,70 +163,128 @@ class AdminCog(commands.Cog):
                     created_count += 1
         return created_count
 
+    def apply_world_patch(self, base_data: list, patch_data: list) -> tuple[list, list]:
+        """
+        Overwrites base_data stats with patch_data values matching by 'castle'.
+        Only updates: 'base_income' and 'army_stats'.
+        Returns: (Patched Data List, List of Strings describing changes)
+        """
+        # Convert base_data to a dict for fast lookup: { "Winterfell": {data...}, ... }
+        world_map = {entry["castle"]: entry for entry in base_data}
+        logs = []
+
+        for patch in patch_data:
+            castle_name = patch.get("castle")
+
+            # Skip if castle doesn't exist in master data
+            if not castle_name or castle_name not in world_map:
+                logs.append(f"⚠️ Skipped '{castle_name}': Not found in master data.")
+                continue
+
+            target = world_map[castle_name]
+            changes = []
+
+            # 1. Patch Income (Affects Treasury & Manpower)
+            if "base_income" in patch:
+                old_inc = target.get("base_income", 0)
+                new_inc = patch["base_income"]
+                target["base_income"] = new_inc
+                changes.append(f"💰 Income: {old_inc} -> {new_inc}")
+
+            # 2. Patch Army Stats
+            if "army_stats" in patch:
+                if "army_stats" not in target:
+                    target["army_stats"] = {}
+
+                # We merge keys, so you can just update 'ships' without deleting 'infantry'
+                for unit, count in patch["army_stats"].items():
+                    old_count = target["army_stats"].get(unit, 0)
+                    target["army_stats"][unit] = count
+                    changes.append(f"⚔️ {unit.title()}: {old_count} -> {count}")
+
+            if changes:
+                logs.append(f"**{castle_name}**: " + ", ".join(changes))
+
+        # Return the list values back
+        return list(world_map.values()), logs
+
     @commands.command(name="setup_game")
     @commands.has_permissions(administrator=True)
     async def setup_game(
         self, ctx, ruling_house: str = "Targaryen", mode: str = "SPLIT"
     ):
         """
-        Initializes the game world from local master data.
-
-        Args:
-        - ruling_house: "Targaryen" or "Baratheon"
-        - mode: "SPLIT" (Heir/Ancestral are separate) or "UNIFIED" (King holds all)
-
         Usage: !setup_game Baratheon SPLIT
+        Optional: Attach a 'patch.json' to change specific stats.
         """
-        # 1. Validate Mode
         mode = mode.upper()
         if mode not in ["SPLIT", "UNIFIED"]:
-            return await ctx.send("❌ Invalid Mode. Use `SPLIT` or `UNIFIED`.")
+            return await ctx.send("❌ Invalid Mode.")
 
-        # 2. Check for Active Game
+        # 1. Check Active Game
         async with get_session() as session:
             stmt = select(Game).where(
                 Game.guild_id == ctx.guild.id, Game.is_active == True
             )
-            result = await session.execute(stmt)
-            existing_game = result.scalars().first()
+            if (await session.execute(stmt)).scalars().first():
+                return await ctx.send("⚠️ Game Active. End it first.")
 
-            if existing_game:
-                await ctx.send("⚠️ Game Active. Use `!end_game CONFIRM PURGE`.")
-                return
+        # 2. Load Master Data (Always required as base)
+        if not os.path.exists("master_world_data.json"):
+            return await ctx.send(
+                "❌ Critical: 'master_world_data.json' missing on server."
+            )
 
-        msg = await ctx.send(
-            f"🌍 **Initializing World...**\n👑 Crown: **{ruling_house}**\n⚙️ Mode: **{mode}**"
-        )
+        with open("master_world_data.json", "r", encoding="utf-8") as f:
+            world_data = json.load(f)
 
-        # 3. Initialize World
+        status_msg = f"🌍 **Initializing World...**\n👑 Crown: **{ruling_house}**\n⚙️ Mode: **{mode}**"
+
+        # 3. Handle Patch File (If attached)
+        patch_log = ""
+        if ctx.message.attachments:
+            try:
+                att = ctx.message.attachments[0]
+                if not att.filename.endswith(".json"):
+                    return await ctx.send("❌ Patch must be .json")
+
+                patch_bytes = await att.read()
+                patch_data = json.loads(patch_bytes.decode("utf-8"))
+
+                # Apply the patch logic
+                world_data, logs = self.apply_world_patch(world_data, patch_data)
+
+                status_msg += f"\n📥 **Patch Applied:** {len(logs)} modifications."
+                if logs:
+                    # Create a snippet of logs (don't spam if too long)
+                    preview = "\n".join(logs[:5])
+                    if len(logs) > 5:
+                        preview += f"\n...and {len(logs)-5} more."
+                    patch_log = f"\n```{preview}```"
+
+            except json.JSONDecodeError:
+                return await ctx.send("❌ Patch JSON is invalid.")
+            except Exception as e:
+                return await ctx.send(f"❌ Patch Error: {e}")
+
+        msg = await ctx.send(status_msg + patch_log)
+
+        # 4. Initialize World
         async with get_session() as session:
             setup = SetupService(session)
 
-            # We pass the hardcoded local path as you requested
+            # Use the init_world method from previous answer (that accepts a list)
             success, message = await setup.init_world(
                 guild_id=ctx.guild.id,
                 gm_discord_id=ctx.author.id,
-                json_path="master_world_data.json",
+                world_data=world_data,  # <--- The Patched Data
                 ruling_house_name=ruling_house,
                 era_mode=mode,
             )
 
             if success:
-                await msg.edit(content=f"{message}\n🔨 **Constructing Channels...**")
-
-                # Run channel construction
-                try:
-                    count = await self.create_logistics_channels(ctx)
-                    await ctx.send(f"✅ **Ready.** Created {count} channels.")
-                except AttributeError:
-                    # Fallback if create_logistics_channels isn't in this class
-                    await ctx.send(
-                        "✅ **Ready.** World created (Channel setup skipped)."
-                    )
-                except Exception as e:
-                    await ctx.send(
-                        f"✅ **Ready.** World created, but channel error: {e}"
-                    )
+                await msg.edit(content=f"{message}\n✅ **Setup Complete.**")
+                # (Optional) Trigger channel creation here
             else:
                 await ctx.send(f"⚠️ Setup Failed: {message}")
 
