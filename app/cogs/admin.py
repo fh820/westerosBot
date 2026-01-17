@@ -166,12 +166,25 @@ class AdminCog(commands.Cog):
     def apply_world_patch(self, base_data: list, patch_data: list) -> tuple[list, list]:
         """
         Overwrites base_data stats with patch_data values matching by 'castle'.
-        Only updates: 'base_income' and 'army_stats'.
+        Updates ALL fields present in the patch (Region, Liege, Coords, Stats, etc).
         Returns: (Patched Data List, List of Strings describing changes)
         """
         # Convert base_data to a dict for fast lookup: { "Winterfell": {data...}, ... }
         world_map = {entry["castle"]: entry for entry in base_data}
         logs = []
+
+        # List of simple fields that can be directly overwritten
+        direct_fields = [
+            "region",
+            "house",
+            "liege",
+            "x",
+            "y",
+            "is_ruined",
+            "base_income",
+            "house_type",
+            "ancestral_weapon",
+        ]
 
         for patch in patch_data:
             castle_name = patch.get("castle")
@@ -184,23 +197,36 @@ class AdminCog(commands.Cog):
             target = world_map[castle_name]
             changes = []
 
-            # 1. Patch Income (Affects Treasury & Manpower)
-            if "base_income" in patch:
-                old_inc = target.get("base_income", 0)
-                new_inc = patch["base_income"]
-                target["base_income"] = new_inc
-                changes.append(f"💰 Income: {old_inc} -> {new_inc}")
+            # 1. Update Direct Fields (Loop through the list above)
+            for field in direct_fields:
+                if field in patch:
+                    old_val = target.get(field)
+                    new_val = patch[field]
 
-            # 2. Patch Army Stats
+                    # Only apply and log if the value is actually different
+                    if old_val != new_val:
+                        target[field] = new_val
+                        # Formatting for log readability
+                        if field == "base_income":
+                            changes.append(f"💰 Income: {new_val}")
+                        elif field == "is_ruined":
+                            changes.append(f"🔥 Ruined: {new_val}")
+                        elif field == "liege":
+                            changes.append(f"👑 Liege: {new_val}")
+                        else:
+                            changes.append(f"{field}: {new_val}")
+
+            # 2. Update Army Stats (Nested Merge)
+            # We merge keys, so you can update 'ships' without deleting 'infantry'
             if "army_stats" in patch:
                 if "army_stats" not in target:
                     target["army_stats"] = {}
 
-                # We merge keys, so you can just update 'ships' without deleting 'infantry'
                 for unit, count in patch["army_stats"].items():
                     old_count = target["army_stats"].get(unit, 0)
-                    target["army_stats"][unit] = count
-                    changes.append(f"⚔️ {unit.title()}: {old_count} -> {count}")
+                    if old_count != count:
+                        target["army_stats"][unit] = count
+                        changes.append(f"⚔️ {unit.title()}: {count}")
 
             if changes:
                 logs.append(f"**{castle_name}**: " + ", ".join(changes))
