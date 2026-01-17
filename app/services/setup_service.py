@@ -239,19 +239,38 @@ class SetupService:
         )
 
     async def calculate_initial_treasury(self, game_id: int):
-        """Sets starting gold (2x income) ignoring ruins."""
+        """
+        Seeds the economy for the 'Fief + Purse' model.
+        1. FIEFS: Start with 2 years of income (Local Treasury for recruiting).
+        2. HOUSE: Starts with 1 year of total income (Personal Purse for politics).
+        3. MANPOWER: Calculated from sum of fiefs.
+        """
+
+        # 1. Seed FIEF Treasuries (The Local Economy)
+        # We give every castle 2x its income so players can use !buy immediately.
+        stmt_fiefs = (
+            update(Fief)
+            .where((Fief.game_id == game_id) & (Fief.is_ruined == False))
+            .values(treasury=Fief.base_income * 2)
+        )
+        await self.session.execute(stmt_fiefs)
+
+        # 2. Seed HOUSE Treasury (The Lord's Purse)
+        # We calculate the sum of all fief incomes and put 1x that amount
+        # into the House 'purse'. This allows for gifts/bribes/transfers.
         income_subquery = (
             select(func.sum(Fief.base_income))
             .where((Fief.owner_id == House.house_id) & (Fief.is_ruined == False))
             .correlate(House)
             .scalar_subquery()
         )
-        stmt = (
+
+        stmt_houses = (
             update(House)
             .where(House.game_id == game_id)
-            .values(treasury=func.coalesce(income_subquery, 0) * 2)
+            .values(treasury=func.coalesce(income_subquery, 0))  # 1x Income as Reserve
         )
-        await self.session.execute(stmt)
+        await self.session.execute(stmt_houses)
 
     async def calculate_initial_manpower(self, game_id: int):
         """Sets starting manpower pools."""
