@@ -14,7 +14,7 @@ class SetupService:
         self,
         guild_id: int,
         gm_discord_id: int,
-        json_path: str,
+        world_data: list,  # <--- CHANGED: Now accepts the data list directly
         ruling_house_name: str = "Baratheon",
         era_mode: str = "SPLIT",  # Options: "SPLIT" or "UNIFIED"
     ):
@@ -22,22 +22,20 @@ class SetupService:
             f"--- 🌍 Starting World Initialization for Guild {guild_id} ({era_mode}) ---"
         )
 
-        if not os.path.exists(json_path):
-            return False, f"❌ Error: `{json_path}` not found."
+        # 1. Validate Data (Replaces file check)
+        if not isinstance(world_data, list) or not world_data:
+            return (
+                False,
+                "❌ Error: Invalid World Data provided (Must be a non-empty list).",
+            )
 
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                world_data = json.load(f)
-        except Exception as e:
-            return False, f"❌ JSON Error: {e}"
-
-        # 1. Check for Active Game
+        # 2. Check for Active Game
         stmt = select(Game).where(Game.guild_id == guild_id, Game.is_active == True)
         result = await self.session.execute(stmt)
         if result.scalars().first():
             return False, f"⚠️ Game Active. Run `!end_game CONFIRM PURGE` first."
 
-        # 2. Create Game
+        # 3. Create Game
         game = Game(
             guild_id=guild_id,
             name=f"Westeros Campaign ({ruling_house_name})",
@@ -46,7 +44,7 @@ class SetupService:
         self.session.add(game)
         await self.session.flush()
 
-        # 3. GM Setup
+        # 4. GM Setup
         gm_user_stmt = select(User).where(User.discord_id == gm_discord_id)
         gm_user = (await self.session.execute(gm_user_stmt)).scalars().first()
         if not gm_user:
