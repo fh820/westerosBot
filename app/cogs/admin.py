@@ -283,8 +283,20 @@ class AdminCog(commands.Cog):
             )
 
             if success:
+                await msg.edit(content=f"{message}\n🔨 **Constructing Channels...**")
+                try:
+                    count = await self.create_logistics_channels(ctx)
+                    await ctx.send(f"✅ **Ready.** Created {count} channels.")
+                except AttributeError:
+                    # Fallback if create_logistics_channels isn't in this class
+                    await ctx.send(
+                        "✅ **Ready.** World created (Channel setup skipped)."
+                    )
+                except Exception as e:
+                    await ctx.send(
+                        f"✅ **Ready.** World created, but channel error: {e}"
+                    )
                 await msg.edit(content=f"{message}\n✅ **Setup Complete.**")
-                # (Optional) Trigger channel creation here
             else:
                 await ctx.send(f"⚠️ Setup Failed: {message}")
 
