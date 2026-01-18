@@ -2124,6 +2124,15 @@ class WarfareService:
         fleet.location_x = land_army.location_x
         fleet.location_y = land_army.location_y
 
+        await self.session.execute(
+            delete(PendingInteraction).where(
+                or_(
+                    PendingInteraction.army1_id == land_army.army_id,
+                    PendingInteraction.army2_id == land_army.army_id,
+                )
+            )
+        )
+
         await self.session.delete(land_army)
         await self.session.commit()
         return (
