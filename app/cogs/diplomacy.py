@@ -1146,10 +1146,6 @@ class DiplomacyCog(commands.Cog):
                     f"Use `!gm_diplomacy cancel_call {existing_call.id}` to clear it."
                 )
                 return await player_wait_msg.edit(content=error_msg)
-            if (await session.execute(stmt_check)).scalars().first():
-                return await player_wait_msg.edit(
-                    content=f"❌ **Hold:** This house already has a pending call."
-                )
 
             # Service Call (GM Override)
             service = DiplomacyService(session)
@@ -1541,6 +1537,26 @@ class DiplomacyCog(commands.Cog):
                     )
             else:
                 await ctx.send(f"❌ **Failed to Cancel:** {msg}")
+
+    @gm_diplomacy.command(name="mass_reassign")
+    @commands.check(is_gm)
+    async def gm_mass_reassign(self, ctx, old_liege_id: int, new_liege_id: int):
+        """
+        GM: Moves ALL vassals from OldLiege to NewLiege.
+        Usage: !gm_war mass_reassign [OldLiegeID] [NewLiegeID]
+        Example: !gm_war mass_reassign 704 600 (Moves all Tully vassals to Mallister)
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            service = DiplomacyService(session)
+            success, msg = await service.mass_reassign_vassals(
+                game.game_id, old_liege_id, new_liege_id
+            )
+
+            await ctx.send(msg)
 
 
 async def setup(bot):

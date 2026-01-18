@@ -20,6 +20,7 @@ from app.services.engine_manager import PF_ENGINE
 import math
 from sqlalchemy.orm.attributes import flag_modified
 from app.services.common import FOG_OF_WAR_THRESHOLD, SEA_FOG_OF_WAR_THRESHOLD
+from sqlalchemy import select, func, update
 
 
 class DiplomacyService:
@@ -962,3 +963,42 @@ class DiplomacyService:
 
             traceback.print_exc()
             return False, f"An unexpected error occurred: {e}"
+
+    async def mass_reassign_vassals(
+        self, game_id: int, old_liege_id: int, new_liege_id: int
+    ):
+        """
+        GM Tool: Transfers all vassals from one Liege to another.
+        Only affects houses currently sworn to 'old_liege_id'.
+        """
+        # 1. Validation: Ensure both liege houses exist in this game
+        old_liege = await self.session.get(House, old_liege_id)
+        new_liege = await self.session.get(House, new_liege_id)
+
+        if not old_liege:
+            return False, f"❌ Old Liege ID {old_liege_id} not found."
+        if not new_liege:
+            return False, f"❌ New Liege ID {new_liege_id} not found."
+
+        if old_liege.game_id != game_id or new_liege.game_id != game_id:
+            return False, "❌ Houses must belong to the active game."
+
+        # 2. Execute the Mass Update
+        # SQL Equiv: UPDATE houses SET liege_id = new WHERE liege_id = old AND game_id = current
+        stmt = (
+            update(House)
+            .where(House.game_id == game_id, House.liege_id == old_liege_id)
+            .values(liege_id=new_liege_id)
+        )
+
+        result = await self.session.execute(stmt)
+        await self.session.commit()
+
+        # result.rowcount tells us exactly how many houses were updated
+        count = result.rowcount
+
+        return True, (
+            f"✅ **Mass Reassignment Complete**\n"
+            f"Transferred **{count}** houses from **{old_liege.name}** to **{new_liege.name}**.\n"
+            f"Any house that was NOT sworn to {old_liege.name} was left untouched."
+        )
