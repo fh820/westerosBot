@@ -2103,7 +2103,7 @@ class WarfareService:
 
         if fleet.cargo:
             return False, "❌ Fleet already has cargo."
-        if fleet.status not in ["IDLE", "DOCKED"]:
+        if fleet.status not in ["IDLE", "DOCKED", "RETREATING"]:
             return False, "❌ The fleet must be stationary to embark troops."
 
         ship_capacity = game.ship_capacity
