@@ -3043,6 +3043,62 @@ class WarfareCog(commands.Cog):
 
             await ctx.send(embed=embed)
 
+    @gm_war.command(name="scan_location")
+    @commands.check(is_gm)
+    async def gm_scan_location(self, ctx, *, location_name: str):
+        """
+        GM: Scans a specific location for all armies and garrisons.
+        Usage: !gm_war scan_location "Riverrun"
+        Usage: !gm_war scan_location "1234,5678"
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            service = WarfareService(session)
+            success, result, resolved_loc_name = await service.scan_location_for_armies(
+                game.game_id, location_name
+            )
+
+            if not success:
+                return await ctx.send(result)  # result contains the error message
+
+            armies_at_location = result
+
+            if not armies_at_location:
+                return await ctx.send(
+                    f"🔍 No armies or garrisons found at **{resolved_loc_name}**."
+                )
+
+            # Create paginated embed for results
+            lines = []
+            for army in armies_at_location:
+                lines.append(
+                    f"**{army['commander']}** (ID: {army['id']}) "
+                    f"| {army['troops']} {army['unit_label']}{army['cargo_info']} "
+                    f"| Status: `{army['status']}` | Owner: **{army['owner']}**"
+                )
+
+            chunks = [lines[i : i + 10] for i in range(0, len(lines), 10)]
+            embeds = []
+
+            for i, chunk in enumerate(chunks):
+                embed = discord.Embed(
+                    title=f"🔍 Armies at {resolved_loc_name}",
+                    description="\n".join(chunk),
+                    color=discord.Color.dark_teal(),
+                    timestamp=datetime.datetime.now(datetime.timezone.utc),
+                )
+                embed.set_footer(text=f"Page {i + 1} of {len(chunks)}")
+                embeds.append(embed)
+
+            if len(embeds) == 1:
+                await ctx.send(embed=embeds[0])
+            else:
+                view = Paginator(embeds)
+                await ctx.send(embed=embeds[0], view=view)
+
 
 async def setup(bot):
     await bot.add_cog(WarfareCog(bot))

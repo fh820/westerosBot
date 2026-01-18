@@ -1804,12 +1804,18 @@ class WarfareService:
             if not await self._check_command_authority(player, army1):
                 return False, f"❌ You do not control the target Army `{target_id}`."
         elif army1.house_id != effective_commanding_house_id:
-             return False, f"❌ GM Override: Target Army `{target_id}` does not belong to the acting House."
+            return (
+                False,
+                f"❌ GM Override: Target Army `{target_id}` does not belong to the acting House.",
+            )
 
         # 4. Check Target Status
         valid_statuses = ["IDLE", "GARRISONED", "DOCKED"]
         if army1.status not in valid_statuses:
-             return False, f"❌ Target Army `{target_id}` is busy ({army1.status}). Must be Idle, Garrisoned, or Docked."
+            return (
+                False,
+                f"❌ Target Army `{target_id}` is busy ({army1.status}). Must be Idle, Garrisoned, or Docked.",
+            )
 
         # 5. Process Sources
         merged_count = 0
@@ -1826,13 +1832,13 @@ class WarfareService:
 
         for army2 in source_armies:
             # --- A. Validation Per Source ---
-            
+
             # Ownership
             if not is_gm_override:
                 # We assume if they own the target, and strict house checks pass, we double check specific auth
                 if army2.house_id != player_claimed_house_id:
-                     errors.append(f"ID {army2.army_id}: Not yours")
-                     continue
+                    errors.append(f"ID {army2.army_id}: Not yours")
+                    continue
             elif army2.house_id != effective_commanding_house_id:
                 errors.append(f"ID {army2.army_id}: Wrong House")
                 continue
@@ -1857,14 +1863,14 @@ class WarfareService:
                 continue
 
             # --- B. Execution ---
-            
+
             # Transfer Assets
             count_from_army2 = army2.troop_count
             gold_from_army2 = army2.treasury or 0
-            
+
             total_troops_added += count_from_army2
             total_gold_added += gold_from_army2
-            
+
             # Delete pending interactions for the source army
             await self.session.execute(
                 delete(PendingInteraction).where(
@@ -1882,34 +1888,38 @@ class WarfareService:
                 source_army=army2,
                 target_army=army1,
             )
-            
+
             merged_count += 1
 
         # 6. Finalize Target Updates
         army1.treasury = (army1.treasury or 0) + total_gold_added
-        
-        # Snap target to last merged location? 
-        # Usually target location stays, or snaps if it was empty. 
+
+        # Snap target to last merged location?
+        # Usually target location stays, or snaps if it was empty.
         # We'll leave target location as is, since sources must be close anyway.
 
         await self.session.commit()
 
         # 7. Construct Report
         unit_noun = "ships" if army1.army_type == "SEA" else "men"
-        
+
         if merged_count == 0:
-            return False, f"❌ **Merge Failed:** No armies could be merged.\nIssues:\n• " + "\n• ".join(errors[:5])
+            return (
+                False,
+                f"❌ **Merge Failed:** No armies could be merged.\nIssues:\n• "
+                + "\n• ".join(errors[:5]),
+            )
 
         msg = (
             f"✅ **Merged {merged_count} unit(s)** into **{army1.commander_name}**.\n"
             f"➕ Added: {total_troops_added} {unit_noun}"
         )
-        
+
         if total_gold_added > 0:
             msg += f" and {total_gold_added} gold"
-            
+
         msg += f".\n📊 **New Total:** {army1.troop_count} {unit_noun}"
-        
+
         if army1.treasury > 0:
             msg += f" | 💰 {army1.treasury} gold"
 
@@ -3055,13 +3065,19 @@ class WarfareService:
             # CASE 2: Fleet already has cargo (e.g., continuing a journey), and no new `units_input` specified
             # This path is usually hit when `SailSetupModal` is submitted for a fleet
             # that already has cargo, and `units_input` is passed as `None`.
-            elif source_fleet.cargo and source_fleet.cargo.get("troop_count", 0) > 0 and units_input is None:
+            elif (
+                source_fleet.cargo
+                and source_fleet.cargo.get("troop_count", 0) > 0
+                and units_input is None
+            ):
                 total_men_in_cargo = source_fleet.cargo.get("troop_count", 0)
                 cargo_payload = copy.deepcopy(source_fleet.cargo)
                 # If a commander was explicitly provided, it overrides the cargo's commander
-                if commander: # If we have an explicit commander, use it for the cargo
+                if commander:  # If we have an explicit commander, use it for the cargo
                     cargo_payload["commander"] = commander
-                commander = cargo_payload.get("commander") # Use existing or new commander from cargo
+                commander = cargo_payload.get(
+                    "commander"
+                )  # Use existing or new commander from cargo
 
             # CASE 3: User manually provided `units_input` (e.g., from modal text input)
             elif units_input is not None:
@@ -3071,7 +3087,7 @@ class WarfareService:
                         "❌ No land troops found at this location to load the specified units.",
                         None,
                     )
-                
+
                 parsed_men, requested_comp = await self._parse_units_for_sailing(
                     units_input
                 )
@@ -3096,7 +3112,7 @@ class WarfareService:
                     "troop_count": parsed_men,
                     "composition": requested_comp,
                 }
-            
+
             # CASE 4: No explicit `units_input`, no existing cargo, but there's a ground army. Auto-pickup.
             elif ground_army:
                 if ground_army.troop_count > ship_count * ship_capacity:
@@ -3110,7 +3126,7 @@ class WarfareService:
                     "composition": ground_army.composition,
                 }
                 await self.session.delete(ground_army)
-            
+
             # Else (if none of the above): `total_men_in_cargo` remains 0, `cargo_payload` remains None.
             # This is implicitly sailing empty if no ground_army and no prior cargo and no manual input.
 
@@ -3733,7 +3749,6 @@ class WarfareService:
             traceback.print_exc()
             return False, f"An unexpected error occurred: {e}"
 
-
     async def retreat_army(
         self,
         game_id: int,
@@ -3763,19 +3778,23 @@ class WarfareService:
 
         # Check Status
         if source_army.status != "RETREATING":
-            return False, f"❌ Army is **{source_army.status}**. Use `!march` instead.", None
+            return (
+                False,
+                f"❌ Army is **{source_army.status}**. Use `!march` instead.",
+                None,
+            )
 
         # 2. Pathfinding & Distance Cap
         # Define how far a shattered army can run (e.g., 500 pixels ~ 500 miles approx)
-        MAX_RETREAT_DISTANCE = 500.0 
-        
+        MAX_RETREAT_DISTANCE = 500.0
+
         origin_name = await self.get_location_name_from_coords(
             game_id, source_army.location_x, source_army.location_y
         )
         dest_coords = await self._get_location_from_db(game_id, dest_name)
-        
+
         if not dest_coords:
-             return False, f"❌ Destination '{dest_name}' is invalid.", None
+            return False, f"❌ Destination '{dest_name}' is invalid.", None
 
         start_coords = (int(source_army.location_x), int(source_army.location_y))
 
@@ -3785,24 +3804,28 @@ class WarfareService:
             end_loc=(dest_coords["x"], dest_coords["y"]),
             waypoints=[wp.strip() for wp in waypoints.split(";")] if waypoints else [],
             travel_mode="optimal",
-            gm_settings={}, # Pass defaults
+            gm_settings={},  # Pass defaults
         )
 
         if not path_data:
             return False, "❌ No path found for retreat.", None
-        
+
         if path_data["total_distance"] > MAX_RETREAT_DISTANCE:
-            return False, (
-                f"❌ **Retreat Target Too Far:** A routing army cannot maintain cohesion for long marches.\n"
-                f"Max Distance: {int(MAX_RETREAT_DISTANCE)} miles. Target is {int(path_data['total_distance'])} miles away.\n"
-                f"Pick a closer safe haven."
-            ), None
+            return (
+                False,
+                (
+                    f"❌ **Retreat Target Too Far:** A routing army cannot maintain cohesion for long marches.\n"
+                    f"Max Distance: {int(MAX_RETREAT_DISTANCE)} miles. Target is {int(path_data['total_distance'])} miles away.\n"
+                    f"Pick a closer safe haven."
+                ),
+                None,
+            )
 
         # 3. Apply Movement
         duration = calculate_travel_duration(
             path_data["terrain_breakdown"], source_army.troop_count
         )
-        
+
         now = datetime.datetime.now(datetime.timezone.utc)
         arrival_time = now + datetime.timedelta(seconds=duration)
 
@@ -3811,9 +3834,9 @@ class WarfareService:
         source_army.destination_y = dest_coords["y"]
         source_army.departure_time = now
         source_army.arrival_time = arrival_time
-        # We keep the status as RETREATING while moving. 
+        # We keep the status as RETREATING while moving.
         # The arrival task should detect this and set it to IDLE upon arrival.
-        
+
         task = resolve_army_arrival.apply_async(
             args=[source_army.army_id], eta=arrival_time
         )
@@ -3827,31 +3850,35 @@ class WarfareService:
         )
 
         from app.tasks.light_tasks import initiate_player_interaction
-        
+
         collisions = await self.check_interceptions_advanced(
             game_id, source_army.army_id, path_points, now, duration
         )
 
         # --- THE FIX: Filter Collisions ---
         valid_collisions = []
-        GRACE_RADIUS = 80.0 # Pixels. Ignores enemies sitting on top of you.
+        GRACE_RADIUS = 80.0  # Pixels. Ignores enemies sitting on top of you.
 
         for col in collisions:
             cx, cy = col["coords"]
             # Calculate distance from START point to COLLISION point
-            dist_from_start = math.sqrt((cx - start_coords[0])**2 + (cy - start_coords[1])**2)
-            
+            dist_from_start = math.sqrt(
+                (cx - start_coords[0]) ** 2 + (cy - start_coords[1]) ** 2
+            )
+
             if dist_from_start > GRACE_RADIUS:
                 valid_collisions.append(col)
             else:
-                print(f"[RETREAT] Ignored immediate collision with Army {col['enemy_id']} (Dist: {dist_from_start:.1f})")
+                print(
+                    f"[RETREAT] Ignored immediate collision with Army {col['enemy_id']} (Dist: {dist_from_start:.1f})"
+                )
 
         # Pick the first valid one (Standard Logic)
         if valid_collisions:
             # Sort by time
             valid_collisions.sort(key=lambda x: x["time"])
             first_contact = valid_collisions[0]
-            
+
             prompt_time = first_contact["time"] - datetime.timedelta(hours=1)
             if prompt_time < now:
                 prompt_time = now + datetime.timedelta(seconds=15)
@@ -3899,7 +3926,10 @@ class WarfareService:
             True,
             f"✅ Army **{army_id}** is now commanded by **{name}** (Martial: {martial}).",
         )
-    async def manual_casualty_calculation(self, winner_id: int, loser_id: int, score_str: str, retreat_success: bool):
+
+    async def manual_casualty_calculation(
+        self, winner_id: int, loser_id: int, score_str: str, retreat_success: bool
+    ):
         """
         GM Tool: Manually applies battle casualties based on a final score.
         score_str format: "WinnerScore-LoserScore" (e.g., "5-0", "5-2")
@@ -3918,22 +3948,26 @@ class WarfareService:
         # 1. Apply Casualties for the ROUNDS fought
         # We simulate the battle round by round.
         # Winner won `w_score` rounds. Loser won `l_score` rounds.
-        
+
         rounds_played = w_score + l_score
-        
+
         # Base loss per round (averaged from your 1-3% range)
-        AVG_LOSS_PCT = 0.02 
-        BONUS_LOSS_PCT = 0.02 # Extra loss for losing the round
+        AVG_LOSS_PCT = 0.02
+        BONUS_LOSS_PCT = 0.02  # Extra loss for losing the round
 
         # Winner's Losses:
         # They lost `l_score` rounds (taking AVG + BONUS damage)
         # They won `w_score` rounds (taking AVG damage)
-        winner_total_loss_pct = (l_score * (AVG_LOSS_PCT + BONUS_LOSS_PCT)) + (w_score * AVG_LOSS_PCT)
-        
+        winner_total_loss_pct = (l_score * (AVG_LOSS_PCT + BONUS_LOSS_PCT)) + (
+            w_score * AVG_LOSS_PCT
+        )
+
         # Loser's Losses:
         # They lost `w_score` rounds (taking AVG + BONUS damage)
         # They won `l_score` rounds (taking AVG damage)
-        loser_total_loss_pct = (w_score * (AVG_LOSS_PCT + BONUS_LOSS_PCT)) + (l_score * AVG_LOSS_PCT)
+        loser_total_loss_pct = (w_score * (AVG_LOSS_PCT + BONUS_LOSS_PCT)) + (
+            l_score * AVG_LOSS_PCT
+        )
 
         # Apply Round Casualties
         w_losses = int(winner.troop_count * winner_total_loss_pct)
@@ -3951,8 +3985,12 @@ class WarfareService:
         intensity_index = max(0, min(5, diff))
 
         # Get rout percentages
-        rout_win_pct = getattr(self, "WINNER_CASUALTY_TABLE", {}).get(intensity_index, 0.05)
-        rout_los_pct = getattr(self, "LOSER_CASUALTY_TABLE", {}).get(intensity_index, 0.45)
+        rout_win_pct = getattr(self, "WINNER_CASUALTY_TABLE", {}).get(
+            intensity_index, 0.05
+        )
+        rout_los_pct = getattr(self, "LOSER_CASUALTY_TABLE", {}).get(
+            intensity_index, 0.45
+        )
 
         w_rout_loss = int(winner.troop_count * rout_win_pct)
         l_rout_loss = int(loser.troop_count * rout_los_pct)
@@ -3967,16 +4005,18 @@ class WarfareService:
         # 4. Handle Retreat/Wipe
         outcome_msg = ""
         if loser.troop_count <= 0:
-             await self.session.delete(loser)
-             outcome_msg = f"💀 **{loser.commander_name}** was wiped out."
+            await self.session.delete(loser)
+            outcome_msg = f"💀 **{loser.commander_name}** was wiped out."
         elif not retreat_success:
-             # Failed retreat = Wipe
-             outcome_msg = f"💀 **{loser.commander_name}** failed to retreat and was destroyed."
-             await self.session.delete(loser)
+            # Failed retreat = Wipe
+            outcome_msg = (
+                f"💀 **{loser.commander_name}** failed to retreat and was destroyed."
+            )
+            await self.session.delete(loser)
         else:
-             outcome_msg = f"💨 **{loser.commander_name}** retreated with {loser.troop_count} survivors."
-             loser.status = "RETREATING"
-             self._stop_movement_immediately(loser)
+            outcome_msg = f"💨 **{loser.commander_name}** retreated with {loser.troop_count} survivors."
+            loser.status = "RETREATING"
+            self._stop_movement_immediately(loser)
 
         self._stop_movement_immediately(winner)
         await self.session.commit()
@@ -3991,4 +4031,57 @@ class WarfareService:
             f"**Loser:** Lost {total_l_lost} troops.\n\n"
             f"**Outcome:** {outcome_msg}"
         )
-    
+
+    async def scan_location_for_armies(self, game_id: int, location_name: str):
+        """
+        Scans a specific location (fief or coordinate) for all armies and garrisons present.
+        Returns a list of dictionaries with army details and owner information.
+        """
+        # 1. Resolve Location Coordinates
+        location_data = await self._get_location_from_db(game_id, location_name)
+        if not location_data:
+            return False, f"❌ Location '{location_name}' not found."
+
+        loc_x, loc_y = location_data["x"], location_data["y"]
+        resolved_loc_name = location_data[
+            "castle"
+        ]  # Use the canonical name from DB or (X,Y)
+
+        # 2. Query for all armies at these coordinates
+        stmt = (
+            select(Army)
+            .where(
+                Army.game_id == game_id,
+                Army.location_x == loc_x,
+                Army.location_y == loc_y,
+            )
+            .options(selectinload(Army.house))  # Eagerly load the owning house
+            .order_by(Army.army_type.asc(), Army.troop_count.desc())
+        )
+        armies = (await self.session.execute(stmt)).scalars().all()
+
+        results = []
+        for army in armies:
+            owner_name = army.house.name if army.house else "NPC (No House)"
+            unit_label = "ships" if army.army_type == "SEA" else "men"
+            cargo_info = ""
+            if (
+                army.army_type == "SEA"
+                and army.cargo
+                and army.cargo.get("troop_count", 0) > 0
+            ):
+                cargo_info = f" (carrying {army.cargo['troop_count']} men)"
+
+            results.append(
+                {
+                    "id": army.army_id,
+                    "commander": army.commander_name,
+                    "troops": army.troop_count,
+                    "unit_label": unit_label,
+                    "cargo_info": cargo_info,
+                    "status": army.status,
+                    "owner": owner_name,
+                    "type": army.army_type,
+                }
+            )
+        return True, results, resolved_loc_name
