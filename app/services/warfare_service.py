@@ -3194,7 +3194,7 @@ class WarfareService:
             fleet_to_sail.departure_time,
             fleet_to_sail.arrival_time,
         ) = ("SAILING", now, arrival)
-
+        land_dur = 0
         if needs_hybrid_journey and total_men_in_cargo > 0:
             # We store the land data in cargo instead of creating the army now
             land_dur = calculate_travel_duration(
