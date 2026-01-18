@@ -4040,12 +4040,11 @@ class WarfareService:
         # 1. Resolve Location Coordinates
         location_data = await self._get_location_from_db(game_id, location_name)
         if not location_data:
-            return False, f"❌ Location '{location_name}' not found."
+            # FIX: Added ", None" to return 3 values matching the success case
+            return False, f"❌ Location '{location_name}' not found.", None
 
         loc_x, loc_y = location_data["x"], location_data["y"]
-        resolved_loc_name = location_data[
-            "castle"
-        ]  # Use the canonical name from DB or (X,Y)
+        resolved_loc_name = location_data["castle"]
 
         # 2. Query for all armies at these coordinates
         stmt = (
@@ -4055,7 +4054,7 @@ class WarfareService:
                 Army.location_x == loc_x,
                 Army.location_y == loc_y,
             )
-            .options(selectinload(Army.house))  # Eagerly load the owning house
+            .options(selectinload(Army.house))
             .order_by(Army.army_type.asc(), Army.troop_count.desc())
         )
         armies = (await self.session.execute(stmt)).scalars().all()
@@ -4084,4 +4083,5 @@ class WarfareService:
                     "type": army.army_type,
                 }
             )
+
         return True, results, resolved_loc_name
