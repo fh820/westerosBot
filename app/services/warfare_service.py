@@ -2224,9 +2224,10 @@ class WarfareService:
 
         # --- CHECK 2: If not a port, scan neighbors for Land/Road ---
         if not best_land_spot:
+            SEARCH_RADIUS = 10
             # Loop dx, dy (-1 to +1)
-            for dx in range(-1, 2):
-                for dy in range(-1, 2):
+            for dx in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1):
+                for dy in range(-SEARCH_RADIUS, SEARCH_RADIUS + 1):
                     check_x, check_y = original_x + dx, original_y + dy
 
                     # Bounds Check
