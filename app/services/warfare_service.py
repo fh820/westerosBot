@@ -934,6 +934,7 @@ class WarfareService:
 
         # 6. Logging & Interception Scheduling
         path_points = path_data.get("path_points", [])
+        await ArmyRepo.clear_march_logs(self.session, army_to_move.army_id)
         await ArmyRepo.log_march_path(
             self.session, army_to_move.army_id, game_id, path_points, now, duration
         )
@@ -3208,7 +3209,7 @@ class WarfareService:
                 "duration": land_dur,
             }
             flag_modified(fleet_to_sail, "cargo")
-
+        await ArmyRepo.clear_march_logs(self.session, fleet_to_sail.army_id)
         await ArmyRepo.log_march_path(
             self.session,
             fleet_to_sail.army_id,
