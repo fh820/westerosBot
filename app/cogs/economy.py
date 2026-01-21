@@ -491,7 +491,11 @@ class EconomyCog(commands.Cog):
             service = EconomyService(session)
 
             report_pages = await service.run_fiscal_year(game.game_id)
-
+            if report_pages and "CRITICAL DATA ERROR" in report_pages[0]:
+                await status_msg.delete()
+                await ctx.send(f"⚠️ **Aborted:** {report_pages[0]}")
+                # We do NOT increment the year, and we do NOT commit.
+                return
             game.current_year += 1
             await session.commit()
 
@@ -1743,6 +1747,205 @@ class EconomyCog(commands.Cog):
                 )
 
             await ctx.send("\n".join(lines)[:2000])
+
+    @commands.command(name="economy", aliases=["bal", "balance", "bank"])
+    @commands.check(is_in_house_channel)
+    async def economy(self, ctx):
+        """
+        Shows a full breakdown of your House's assets and income.
+        """
+        async with get_session() as session:
+            # 1. Get Player House
+            player_house = await self._get_player_house(session, ctx)
+            if not player_house:
+                return await ctx.send("❌ You do not command a House.")
+
+            # 2. Fetch Data via Service
+            service = EconomyService(session)
+            house, fief_total, army_total, tax_income = (
+                await service.get_economy_overview(player_house.house_id)
+            )
+
+            # 3. Build Embed
+            total_liquid = (house.treasury or 0) + fief_total + army_total
+
+            embed = discord.Embed(
+                title=f"💰 House {house.name} Ledger",
+                description=f"**Grand Total Wealth:** `{total_liquid:,} Gold`",
+                color=discord.Color.gold(),
+            )
+
+            # --- A. CENTRAL TREASURY ---
+            embed.add_field(
+                name="🏛️ House Treasury",
+                value=f"**{house.treasury or 0:,} Gold**\n*(Safe storage)*",
+                inline=False,
+            )
+
+            # --- B. FIEFS BREAKDOWN ---
+            fief_lines = []
+            # Sort rich to poor
+            sorted_fiefs = sorted(
+                house.fiefs, key=lambda x: x.treasury or 0, reverse=True
+            )
+
+            for f in sorted_fiefs:
+                if f.treasury and f.treasury > 0:
+                    fief_lines.append(f"**{f.name}**: {f.treasury:,} g")
+                else:
+                    fief_lines.append(f"{f.name}: 0")
+
+            # Formatting list to prevent embed overflow
+            fief_str = "\n".join(fief_lines)
+            if len(fief_str) > 1000:
+                fief_str = fief_str[:900] + "\n... (and others)"
+            if not fief_str:
+                fief_str = "No lands."
+
+            embed.add_field(
+                name=f"🏰 Fief Vaults (Total: {fief_total:,} Gold)",
+                value=f">>> {fief_str}",
+                inline=True,
+            )
+
+            # --- C. ARMIES BREAKDOWN ---
+            army_lines = []
+            sorted_armies = sorted(
+                house.armies, key=lambda x: x.treasury or 0, reverse=True
+            )
+
+            for a in sorted_armies:
+                # Only show armies that have money or troops
+                if (a.treasury and a.treasury > 0) or a.troop_count > 0:
+                    val = a.treasury or 0
+                    army_lines.append(f"**{a.commander_name}**: {val:,} g")
+
+            army_str = "\n".join(army_lines)
+            if len(army_str) > 1000:
+                army_str = army_str[:900] + "\n... (and others)"
+            if not army_str:
+                army_str = "No active armies."
+
+            embed.add_field(
+                name=f"⚔️ Army Coffers (Total: {army_total:,} Gold)",
+                value=f">>> {army_str}",
+                inline=True,
+            )
+
+            # --- D. INCOME ---
+            # Note: This is projected annual tax. Fief income is internal to the fiefs.
+            embed.add_field(
+                name="📈 Projected Annual Tax Income",
+                value=f"**{tax_income:,} Gold** / year\n*(From Vassals)*",
+                inline=False,
+            )
+
+            embed.set_footer(
+                text="Use !transfer_gold to move funds between these containers."
+            )
+
+            await ctx.send(embed=embed)
+
+    @gm_econ.command(name="economy", aliases=["bal", "balance"])
+    async def gm_economy_view(self, ctx, *, house_identifier: str):
+        """
+        GM: View the full financial ledger of a specific House.
+        Usage: !gm_econ economy Stark  OR  !gm_econ economy 12
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            # 1. Resolve House (Name or ID)
+            stmt = select(House).where(House.game_id == game.game_id)
+            if house_identifier.isdigit():
+                stmt = stmt.where(House.house_id == int(house_identifier))
+            else:
+                stmt = stmt.where(House.name.ilike(house_identifier))
+
+            target_house = (await session.execute(stmt)).scalars().first()
+
+            if not target_house:
+                return await ctx.send(f"❌ House '{house_identifier}' not found.")
+
+            # 2. Fetch Data via Service
+            service = EconomyService(session)
+            house, fief_total, army_total, tax_income = (
+                await service.get_economy_overview(target_house.house_id)
+            )
+
+            # 3. Build Embed (Reused Logic)
+            total_liquid = (house.treasury or 0) + fief_total + army_total
+
+            embed = discord.Embed(
+                title=f"🕵️ GM Audit: House {house.name}",
+                description=f"**Grand Total Wealth:** `{total_liquid:,} Gold`",
+                color=discord.Color.dark_magenta(),  # Distinct GM Color
+            )
+
+            # --- A. CENTRAL TREASURY ---
+            embed.add_field(
+                name="🏛️ House Treasury",
+                value=f"**{house.treasury or 0:,} Gold**",
+                inline=False,
+            )
+
+            # --- B. FIEFS BREAKDOWN ---
+            fief_lines = []
+            sorted_fiefs = sorted(
+                house.fiefs, key=lambda x: x.treasury or 0, reverse=True
+            )
+
+            for f in sorted_fiefs:
+                if f.treasury and f.treasury > 0:
+                    fief_lines.append(f"**{f.name}**: {f.treasury:,} g")
+                else:
+                    fief_lines.append(f"{f.name}: 0")
+
+            fief_str = "\n".join(fief_lines)
+            if len(fief_str) > 1000:
+                fief_str = fief_str[:900] + "\n... (truncated)"
+            if not fief_str:
+                fief_str = "No lands."
+
+            embed.add_field(
+                name=f"🏰 Fief Vaults (Total: {fief_total:,})",
+                value=f">>> {fief_str}",
+                inline=True,
+            )
+
+            # --- C. ARMIES BREAKDOWN ---
+            army_lines = []
+            sorted_armies = sorted(
+                house.armies, key=lambda x: x.treasury or 0, reverse=True
+            )
+
+            for a in sorted_armies:
+                if (a.treasury and a.treasury > 0) or a.troop_count > 0:
+                    val = a.treasury or 0
+                    army_lines.append(f"**{a.commander_name}**: {val:,} g")
+
+            army_str = "\n".join(army_lines)
+            if len(army_str) > 1000:
+                army_str = army_str[:900] + "\n... (truncated)"
+            if not army_str:
+                army_str = "No active armies."
+
+            embed.add_field(
+                name=f"⚔️ Army Coffers (Total: {army_total:,})",
+                value=f">>> {army_str}",
+                inline=True,
+            )
+
+            # --- D. TAX INCOME ---
+            embed.add_field(
+                name="📈 Projected Tax Income",
+                value=f"**{tax_income:,} Gold** / year",
+                inline=False,
+            )
+
+            await ctx.send(embed=embed)
 
 
 async def setup(bot):

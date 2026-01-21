@@ -516,3 +516,28 @@ class EconomyService:
         flag_modified(game, "income_modifiers")
         await self.session.commit()
         return True, msg
+
+    async def get_economy_overview(self, house_id: int):
+        """
+        Fetches all economic assets for a house.
+        Returns: (HouseObj, FiefTotal, ArmyTotal, ProjectedTax)
+        """
+        # Load House with Fiefs and Armies populated
+        stmt = (
+            select(House)
+            .where(House.house_id == house_id)
+            .options(selectinload(House.fiefs), selectinload(House.armies))
+        )
+        house = (await self.session.execute(stmt)).scalars().first()
+        if not house:
+            return None, 0, 0, 0
+
+        # 1. Calculate Liquid Assets
+        fief_total = sum(f.treasury or 0 for f in house.fiefs)
+        army_total = sum(a.treasury or 0 for a in house.armies)
+
+        # 2. Calculate Expected Tax Income (Using existing logic)
+        # We discard the specific vassal breakdown list (_) and just take the total
+        _, tax_income = await self.calculate_tax_income_for_house(house_id)
+
+        return house, fief_total, army_total, tax_income
