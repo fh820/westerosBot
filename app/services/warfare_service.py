@@ -2446,6 +2446,7 @@ class WarfareService:
         for unit, count in new_comp.items():
             garrison.composition[unit] = garrison.composition.get(unit, 0) + count
 
+        self._sync_army_size(garrison)
         flag_modified(garrison, "composition")
 
         await self.session.commit()
@@ -2889,6 +2890,24 @@ class WarfareService:
                         queue.append((nx, ny))
         return None
 
+    def _sync_army_size(self, army: Army):
+        """Helper to ensure troop_count always matches composition sum."""
+        if army.composition:
+            # Ensure no negative numbers in composition
+            for k, v in army.composition.items():
+                if v < 0:
+                    army.composition[k] = 0
+
+            # Recalculate total
+            army.troop_count = sum(army.composition.values())
+
+            # Cleanup empty keys
+            army.composition = {k: v for k, v in army.composition.items() if v > 0}
+
+            from sqlalchemy.orm.attributes import flag_modified
+
+            flag_modified(army, "composition")
+
     async def sail_fleet(
         self,
         game_id: int,
@@ -3108,10 +3127,10 @@ class WarfareService:
                     )
 
                 # Deduct from ground host
-                ground_army.troop_count -= parsed_men
+                # ground_army.troop_count -= parsed_men
                 for k, v in requested_comp.items():
                     ground_army.composition[k] = ground_army.composition.get(k, 0) - v
-
+                self._sync_army_size(ground_army)
                 if ground_army.troop_count <= 0:
                     await self.session.delete(ground_army)
                 else:
@@ -4012,6 +4031,8 @@ class WarfareService:
         # 3. Update Compositions
         self._scale_composition(winner, winner.troop_count)
         self._scale_composition(loser, loser.troop_count)
+        self._sync_army_size(winner)
+        self._sync_army_size(loser)
 
         # 4. Handle Retreat/Wipe
         outcome_msg = ""

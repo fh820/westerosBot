@@ -1947,6 +1947,35 @@ class EconomyCog(commands.Cog):
 
             await ctx.send(embed=embed)
 
+    @gm_econ.command(name="fix_sync")
+    async def fix_army_sync(self, ctx):
+        """
+        Recalculates every army's total troop_count based on their composition.
+        Fixes negative numbers and desyncs.
+        """
+        async with get_session() as session:
+            stmt = select(Army)
+            all_armies = (await session.execute(stmt)).scalars().all()
+
+            fixed_count = 0
+            for army in all_armies:
+                # 1. Calculate real total from composition
+                real_total = 0
+                if army.composition:
+                    real_total = sum(army.composition.values())
+
+                # 2. Check for Desync
+                if army.troop_count != real_total:
+                    old_count = army.troop_count
+                    army.troop_count = real_total
+                    fixed_count += 1
+                    # print(f"Fixed Army {army.army_id}: {old_count} -> {real_total}")
+
+            await session.commit()
+            await ctx.send(
+                f"✅ **Synchronization Complete.** Fixed **{fixed_count}** armies with mismatched data."
+            )
+
 
 async def setup(bot):
     await bot.add_cog(EconomyCog(bot))
