@@ -44,50 +44,40 @@ class EconomyService:
     ):
         """
         Generic Transfer Logic (Async Safe).
+        CORRECTED: 'HOUSE' type now targets the abstract House Treasury, NOT the Capital Fief.
         """
         if amount <= 0:
             return False, "❌ Amount must be positive."
 
-        # Helper to fetch objects safely
-        async def fetch_obj(model, ident):
-            # We use select() instead of get() to ensure we are in the async execution context
-            # and to allow expanding this with options() later if needed.
-            stmt = select(model).where(
-                getattr(model, model.__table__.primary_key.columns.keys()[0]) == ident
-            )
-            return (await self.session.execute(stmt)).scalars().first()
+        # Helper to fetch objects by ID safely
+        async def fetch_entity(model, ident):
+            return await self.session.get(model, ident)
 
         # --- 1. RESOLVE SOURCE ---
         source_obj = None
         source_name = ""
 
         if source_type == "FIEF":
-            source_obj = await fetch_obj(Fief, source_id)
-            source_name = f"Fief {source_obj.name}" if source_obj else "Unknown"
+            source_obj = await fetch_entity(Fief, source_id)
+            source_name = f"Fief {source_obj.name}" if source_obj else "Unknown Fief"
 
         elif source_type == "ARMY":
-            source_obj = await fetch_obj(Army, source_id)
+            source_obj = await fetch_entity(Army, source_id)
             source_name = (
-                f"Army {source_obj.commander_name}" if source_obj else "Unknown"
+                f"Army {source_obj.commander_name}" if source_obj else "Unknown Army"
             )
 
         elif source_type == "HOUSE":
-            # Resolve House ID to its Capital Fief
-            stmt = (
-                select(Fief)
-                .where(Fief.owner_id == source_id)
-                .order_by(Fief.fief_id.asc())
-                .limit(1)
-            )
-            source_obj = (await self.session.execute(stmt)).scalars().first()
+            # FIX: Directly target the House Table (Abstract Treasury)
+            source_obj = await fetch_entity(House, source_id)
             source_name = (
-                f"House Capital ({source_obj.name})" if source_obj else "Landless House"
+                f"House {source_obj.name} Treasury" if source_obj else "Unknown House"
             )
 
         if not source_obj:
             return (
                 False,
-                f"❌ Source {source_type} (ID: {source_id}) not found or has no lands.",
+                f"❌ Source {source_type} (ID: {source_id}) not found.",
             )
 
         # --- 2. CHECK FUNDS ---
@@ -103,25 +93,20 @@ class EconomyService:
         target_name = ""
 
         if target_type == "FIEF":
-            target_obj = await fetch_obj(Fief, target_id)
-            target_name = f"Fief {target_obj.name}" if target_obj else "Unknown"
+            target_obj = await fetch_entity(Fief, target_id)
+            target_name = f"Fief {target_obj.name}" if target_obj else "Unknown Fief"
 
         elif target_type == "ARMY":
-            target_obj = await fetch_obj(Army, target_id)
+            target_obj = await fetch_entity(Army, target_id)
             target_name = (
-                f"Army {target_obj.commander_name}" if target_obj else "Unknown"
+                f"Army {target_obj.commander_name}" if target_obj else "Unknown Army"
             )
 
         elif target_type == "HOUSE":
-            stmt = (
-                select(Fief)
-                .where(Fief.owner_id == target_id)
-                .order_by(Fief.fief_id.asc())
-                .limit(1)
-            )
-            target_obj = (await self.session.execute(stmt)).scalars().first()
+            # FIX: Directly target the House Table (Abstract Treasury)
+            target_obj = await fetch_entity(House, target_id)
             target_name = (
-                f"House Capital ({target_obj.name})" if target_obj else "Landless House"
+                f"House {target_obj.name} Treasury" if target_obj else "Unknown House"
             )
 
         if not target_obj:
