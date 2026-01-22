@@ -285,19 +285,30 @@ class DiplomacyService:
                 npc_vassals_to_process.append(vassal)
 
         # Recursive function to calculate ONLY NPC troop counts.
-        async def get_npc_tree_troops(house_obj):
+        async def get_npc_tree_troops(house_obj, visited=None):
+            # --- FIX: Initialize visited set to prevent infinite recursion ---
+            if visited is None:
+                visited = set()
+
+            if house_obj.house_id in visited:
+                return 0  # We've already counted this house in this chain; stop.
+            visited.add(house_obj.house_id)
+            # ---------------------------------------------------------------
+
             stmt_a = select(func.sum(Army.troop_count)).where(
                 Army.house_id == house_obj.house_id,
                 Army.army_type == "LAND",
                 Army.status.in_(["GARRISONED"]),
             )
             total_troops = (await self.session.execute(stmt_a)).scalar() or 0
+
             stmt_sub = select(House).where(
                 House.liege_id == house_obj.house_id, House.is_ruined == False
             )
             for sub_vassal in (await self.session.execute(stmt_sub)).scalars().all():
                 if sub_vassal.house_id not in player_map:
-                    total_troops += await get_npc_tree_troops(sub_vassal)
+                    # Pass the 'visited' set down to the next level
+                    total_troops += await get_npc_tree_troops(sub_vassal, visited)
             return total_troops
 
         # Process the confirmed NPC vassals
@@ -570,7 +581,19 @@ class DiplomacyService:
                 npc_vassals_to_process.append(vassal)
 
         # Recursive function to get ONLY NPC ship counts and a representative fleet ID.
-        async def get_npc_tree_ships(house_obj):
+        async def get_npc_tree_ships(house_obj, visited=None):
+            # --- FIX: Initialize visited set to prevent infinite recursion ---
+            if visited is None:
+                visited = set()
+
+            if house_obj.house_id in visited:
+                print(
+                    f"     [LOOP DETECTED] Skipping {house_obj.name} (already visited)."
+                )
+                return 0, None
+            visited.add(house_obj.house_id)
+            # ---------------------------------------------------------------
+
             print(f"     --> Recursion: Checking ships for {house_obj.name}")
 
             # DEBUG: Show ALL fleets for this house regardless of status
@@ -592,7 +615,6 @@ class DiplomacyService:
                 .where(
                     Army.house_id == house_obj.house_id,
                     Army.army_type == "SEA",
-                    # DEBUG: I expanded the status check to see if that was the issue
                     Army.status.in_(["GARRISONED", "IDLE", "DOCKED"]),
                 )
                 .limit(1)
@@ -613,7 +635,11 @@ class DiplomacyService:
             )
             for sub_vassal in (await self.session.execute(stmt_sub)).scalars().all():
                 if sub_vassal.house_id not in player_map:
-                    sub_ships, sub_fleet_id = await get_npc_tree_ships(sub_vassal)
+                    # --- FIX: Pass 'visited' to the recursive call ---
+                    sub_ships, sub_fleet_id = await get_npc_tree_ships(
+                        sub_vassal, visited
+                    )
+                    # -------------------------------------------------
                     total_ships += sub_ships
                     # If we don't have a fleet ID yet, use the one from the sub-vassal
                     if not primary_fleet_id:
