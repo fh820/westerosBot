@@ -686,8 +686,6 @@ class AdminCog(commands.Cog):
 
     @commands.command(name="set_crown")
     @commands.has_permissions(administrator=True)
-    @commands.command(name="set_crown")
-    @commands.has_permissions(administrator=True)
     async def set_crown(self, ctx, target: discord.Member):
         """
         Assigns a user to the main Royal House (King's Landing),
