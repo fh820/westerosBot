@@ -686,23 +686,89 @@ class AdminCog(commands.Cog):
 
     @commands.command(name="set_crown")
     @commands.has_permissions(administrator=True)
+    @commands.command(name="set_crown")
+    @commands.has_permissions(administrator=True)
     async def set_crown(self, ctx, target: discord.Member):
-        """Assigns a user to the main Royal House (King's Landing)."""
+        """
+        Assigns a user to the main Royal House (King's Landing),
+        preserves their channel, and fixes their old house's vassalage.
+        """
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
-            # Find the house holding King's Landing
-            stmt = (
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            # 1. Find the Royal House (King's Landing)
+            stmt_royal = (
                 select(House)
                 .join(Fief)
                 .where(Fief.name == "King's Landing", House.game_id == game.game_id)
             )
-            house = (await session.execute(stmt)).scalars().first()
-            if not house:
-                return await ctx.send("❌ Royal House not found.")
+            royal_house = (await session.execute(stmt_royal)).scalars().first()
 
-            await self._assign_player_to_house(session, game.game_id, target, house)
+            if not royal_house:
+                return await ctx.send("❌ Royal House (King's Landing) not found.")
+
+            # 2. Find the Player's Current State
+            stmt_player = (
+                select(GamePlayer)
+                .join(User)
+                .where(User.discord_id == target.id, GamePlayer.game_id == game.game_id)
+                .options(selectinload(GamePlayer.house))  # Load old house data
+            )
+            player_record = (await session.execute(stmt_player)).scalars().first()
+
+            if not player_record:
+                return await ctx.send(f"❌ {target.mention} is not in the game yet.")
+
+            # Capture old house info before switching
+            old_house = player_record.house
+            current_channel_id = player_record.private_channel_id
+
+            # 3. The Switch
+            # Move player to Royal House
+            player_record.claimed_house_id = royal_house.house_id
+
+            # CRITICAL: Ensure the private channel stays linked to this player
+            # (If they had a channel, keep it. If not, it stays None)
+            player_record.private_channel_id = current_channel_id
+
+            # 4. Fix the "Infinite Loop" / Vassalage
+            # The house they left (e.g., Dragonstone) must now submit to the King
+            if old_house and old_house.house_id != royal_house.house_id:
+                old_house.liege_id = royal_house.house_id
+
+                # Check for self-referential loop on the Royal House just in case
+                if royal_house.liege_id == royal_house.house_id:
+                    royal_house.liege_id = None
+
+                msg_extra = (
+                    f"House {old_house.name} is now a vassal of {royal_house.name}."
+                )
+            else:
+                msg_extra = ""
+
+            await session.commit()
+
+            # 5. Discord Side: Rename the channel and Update Roles
+            if current_channel_id:
+                channel = ctx.guild.get_channel(current_channel_id)
+                if channel:
+                    try:
+                        # Rename channel to reflect new status
+                        await channel.edit(name=f"royal-quarters-{target.display_name}")
+                        await channel.send(
+                            f"👑 **All Hail His Grace!** This channel is now the seat of **{royal_house.name}**."
+                        )
+                    except discord.Forbidden:
+                        pass  # Bot might not have permission to rename, ignore
+
+            # Assign new Role
+            await self.manage_house_role(ctx, royal_house, target)
+
             await ctx.send(
-                f"👑 **The Iron Throne:** {target.mention} is now the **King** ({house.name})."
+                f"👑 **The Iron Throne:** {target.mention} is now the **King** ({royal_house.name}).\n"
+                f"📝 **Log:** Player moved. {msg_extra}"
             )
 
     @commands.command(name="set_heir")
