@@ -4117,3 +4117,103 @@ class WarfareService:
             )
 
         return True, results, resolved_loc_name
+
+    async def merge_all_at_location(
+        self,
+        game_id: int,
+        user_id: int,
+        house_id: int,
+        location_name: str,
+        is_gm_override: bool = False,
+    ):
+        """
+        Finds all stationary units for a house at a specific location and merges them by type.
+        The largest army/fleet of each type becomes the target for the merge.
+        """
+        # 1. Resolve location from name to coordinates
+        location_data = await self._get_location_from_db(game_id, location_name)
+        if not location_data:
+            return False, f"❌ Location '{location_name}' not found."
+        loc_x, loc_y = location_data["x"], location_data["y"]
+        resolved_loc_name = location_data["castle"]
+
+        # 2. Fetch all eligible armies for the specified house at the location
+        stmt = select(Army).where(
+            Army.house_id == house_id,
+            Army.location_x == loc_x,
+            Army.location_y == loc_y,
+            Army.status.in_(["IDLE", "GARRISONED", "DOCKED"]),  # Must be stationary
+        )
+        armies_at_loc = (await self.session.execute(stmt)).scalars().all()
+
+        if len(armies_at_loc) < 2:
+            return (
+                False,
+                f"ℹ️ Fewer than two mergeable units were found for this house at **{resolved_loc_name}**.",
+            )
+
+        # 3. Group armies by type (LAND vs SEA) and sort by size to find targets
+        land_armies = sorted(
+            [a for a in armies_at_loc if a.army_type == "LAND"],
+            key=lambda x: x.troop_count,
+            reverse=True,
+        )
+        sea_armies = sorted(
+            [a for a in armies_at_loc if a.army_type == "SEA"],
+            key=lambda x: x.troop_count,
+            reverse=True,
+        )
+
+        final_report = []
+        merged_anything = False
+
+        # 4. Process and merge LAND armies if there's more than one
+        if len(land_armies) > 1:
+            target_army = land_armies[0]
+            source_ids = [a.army_id for a in land_armies[1:]]
+
+            # Reuse the existing robust merge function
+            success, msg = await self.merge_armies(
+                game_id,
+                user_id,
+                target_army.army_id,
+                source_ids,
+                is_gm_override=is_gm_override,
+                acting_house_id=house_id,
+            )
+            if success:
+                final_report.append(f"**Land Armies:**\n{msg}")
+                merged_anything = True
+            else:
+                final_report.append(f"**Land Armies Merge Failed:**\n{msg}")
+
+        # 5. Process and merge SEA armies (fleets) if there's more than one
+        if len(sea_armies) > 1:
+            target_army = sea_armies[0]
+            source_ids = [a.army_id for a in sea_armies[1:]]
+
+            success, msg = await self.merge_armies(
+                game_id,
+                user_id,
+                target_army.army_id,
+                source_ids,
+                is_gm_override=is_gm_override,
+                acting_house_id=house_id,
+            )
+            if success:
+                final_report.append(f"**Fleets:**\n{msg}")
+                merged_anything = True
+            else:
+                final_report.append(f"**Fleet Merge Failed:**\n{msg}")
+
+        if not merged_anything:
+            return (
+                False,
+                f"ℹ️ No groups with more than one unit were found to merge at **{resolved_loc_name}**.",
+            )
+
+        # 6. Compile and return the final report
+        full_report = f"### Merge Report for **{resolved_loc_name}**\n" + "\n\n".join(
+            final_report
+        )
+        return True, full_report

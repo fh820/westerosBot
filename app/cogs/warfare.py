@@ -3099,6 +3099,75 @@ class WarfareCog(commands.Cog):
                 view = Paginator(embeds)
                 await ctx.send(embed=embeds[0], view=view)
 
+    @commands.command(name="merge_all")
+    @commands.check(is_in_house_channel)
+    async def merge_all(self, ctx, *, location_name: str):
+        """
+        Merges all of your stationary units of the same type at a specific location.
+        Usage: !merge_all "King's Landing"
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            user = await session.scalar(
+                select(User).where(User.discord_id == ctx.author.id)
+            )
+            if not user:
+                return await ctx.send("❌ You are not a registered user.")
+
+            player = await session.scalar(
+                select(GamePlayer).where(
+                    GamePlayer.user_id == user.user_id,
+                    GamePlayer.game_id == game.game_id,
+                )
+            )
+            if not player or not player.claimed_house_id:
+                return await ctx.send("❌ You do not command a house.")
+
+            service = WarfareService(session)
+            async with ctx.typing():
+                success, msg = await service.merge_all_at_location(
+                    game_id=game.game_id,
+                    user_id=user.user_id,
+                    house_id=player.claimed_house_id,
+                    location_name=location_name,
+                    is_gm_override=False,
+                )
+
+            await ctx.send(msg)
+
+    @gm_war.command(name="merge_all")
+    @commands.check(is_gm)
+    async def gm_merge_all(self, ctx, target_house_id: int, *, location_name: str):
+        """
+        GM: Merges all stationary units for a specific house at a location.
+        Usage: !gm_war merge_all [HouseID] "Riverrun"
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("❌ No active game.")
+
+            gm_user = await session.scalar(
+                select(User).where(User.discord_id == ctx.author.id)
+            )
+            if not gm_user:
+                return await ctx.send("❌ Could not find GM user in database.")
+
+            service = WarfareService(session)
+            async with ctx.typing():
+                success, msg = await service.merge_all_at_location(
+                    game_id=game.game_id,
+                    user_id=gm_user.user_id,
+                    house_id=target_house_id,
+                    location_name=location_name,
+                    is_gm_override=True,
+                )
+
+            await ctx.send(msg)
+
 
 async def setup(bot):
     await bot.add_cog(WarfareCog(bot))
