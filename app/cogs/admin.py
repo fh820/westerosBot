@@ -56,6 +56,45 @@ class AdminCog(commands.Cog):
                 except:
                     pass
 
+    async def manage_house_role(self, ctx, house, member: discord.Member):
+        """
+        Ensures a Role exists for the house and assigns it to the specified member.
+        Handles role creation, color setting, and permission errors gracefully.
+        """
+        role_name = house.name
+        role = discord.utils.get(ctx.guild.roles, name=role_name)
+
+        # 1. Create Role if it's missing
+        if not role:
+            try:
+                # Default to grey if color_hex is missing
+                hex_str = house.color_hex or "#808080"
+                color_val = int(hex_str.lstrip("#"), 16)
+
+                role = await ctx.guild.create_role(
+                    name=role_name, color=discord.Color(color_val), mentionable=True
+                )
+                await ctx.send(f"✨ Created new role: **{role.name}**")
+            except Exception as e:
+                await ctx.send(f"⚠️ Failed to create Role for {role_name}: {e}")
+                return None
+
+        # 2. Assign Role to the Member
+        try:
+            if role not in member.roles:
+                await member.add_roles(role)
+                await ctx.send(f"🎖️ Assigned role **{role.name}** to {member.mention}")
+        except discord.Forbidden:
+            await ctx.send(
+                f"❌ **Permissions Error:** The bot's role is below the **{role.name}** role. Cannot assign."
+            )
+        except Exception as e:
+            await ctx.send(
+                f"❌ An unexpected error occurred while assigning the role: {e}"
+            )
+
+        return role
+
     async def create_logistics_channels(self, ctx):
         guild = ctx.guild
         await self.ensure_roles(guild)
