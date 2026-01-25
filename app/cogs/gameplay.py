@@ -683,6 +683,86 @@ class GameplayCog(commands.Cog):
 
             await self._render_detailed_dashboard(ctx, data, is_gm_view=True)
 
+    @commands.command()
+    async def debug_access(self, ctx):
+        """Debugs why !me might be failing."""
+        async with get_session() as session:
+            # 1. Get the Game
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+
+            # 2. Get the Player
+            stmt = (
+                select(GamePlayer)
+                .join(User)
+                .where(
+                    User.discord_id == ctx.author.id, GamePlayer.game_id == game.game_id
+                )
+            )
+            player = (await session.execute(stmt)).scalars().first()
+
+            if not player:
+                return await ctx.send("❌ Debug: No Player Record Found.")
+
+            # 3. Compare IDs
+            saved_id = player.private_channel_id
+            current_id = ctx.channel.id
+
+            msg = (
+                f"👤 **User:** {ctx.author.name}\n"
+                f"📺 **Current Channel ID:** `{current_id}`\n"
+                f"💾 **DB Saved Channel ID:** `{saved_id}`\n"
+                f"----------------------------------\n"
+            )
+
+            if saved_id is None:
+                msg += "⚠️ **Status:** No ID saved. 'endswith(-quarters)' logic applies."
+            elif saved_id == current_id:
+                msg += "✅ **Status:** MATCH. !me should work."
+            else:
+                msg += "❌ **Status:** MISMATCH. You are locked to a different channel (likely deleted)."
+
+            await ctx.send(msg)
+
+    @commands.command()
+    async def debug_access(self, ctx):
+        """Debugs why !me might be failing."""
+        async with get_session() as session:
+            # 1. Get the Game
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+
+            # 2. Get the Player
+            stmt = (
+                select(GamePlayer)
+                .join(User)
+                .where(
+                    User.discord_id == ctx.author.id, GamePlayer.game_id == game.game_id
+                )
+            )
+            player = (await session.execute(stmt)).scalars().first()
+
+            if not player:
+                return await ctx.send("❌ Debug: No Player Record Found.")
+
+            # 3. Compare IDs
+            saved_id = player.private_channel_id
+            current_id = ctx.channel.id
+
+            msg = (
+                f"👤 **User:** {ctx.author.name}\n"
+                f"📺 **Current Channel ID:** `{current_id}`\n"
+                f"💾 **DB Saved Channel ID:** `{saved_id}`\n"
+                f"----------------------------------\n"
+            )
+
+            if saved_id is None:
+                msg += "⚠️ **Status:** No ID saved. 'endswith(-quarters)' logic applies."
+            elif saved_id == current_id:
+                msg += "✅ **Status:** MATCH. !me should work."
+            else:
+                msg += "❌ **Status:** MISMATCH. You are locked to a different channel (likely deleted)."
+
+            await ctx.send(msg)
+
 
 async def setup(bot):
     await bot.add_cog(GameplayCog(bot))
