@@ -1317,187 +1317,6 @@ class WarfareService:
         for army in armies_to_merge:
             # 1. Check Authority
             if not is_gm_override and not bypass_auth:
-                # Normal Player Check: Must own the army or be its liege
-                if player is None or not await self._check_command_authority(
-                    player, army
-                ):
-                    return (
-                        False,
-                        f"❌ You do not have command authority over **{army.commander_name}**.",
-                    )
-
-            # GM Override: We intentionally SKIP the check ensuring army.house_id == acting_house_id.
-            # This allows the GM to merge armies from DIFFERENT houses.
-
-            # 2. Check State
-            if army.is_coalition:
-                return (
-                    False,
-                    f"❌ **{army.commander_name}** is already a coalition. Disband it first.",
-                )
-
-            if army.status in ["MARCHING", "SAILING"]:
-                return False, f"❌ **{army.commander_name}** is currently moving."
-
-            if army.army_type != first_army_type:
-                return False, "❌ You cannot merge land armies with fleets."
-
-            # 3. Check Distance (15px Tolerance)
-            dist = math.sqrt(
-                (army.location_x - ref_x) ** 2 + (army.location_y - ref_y) ** 2
-            )
-            if dist > 15.0:
-                return (
-                    False,
-                    f"❌ **{army.commander_name}** is too far away ({dist:.1f} px).",
-                )
-
-        # Create Coalition Shell
-        coalition = Army(
-            game_id=game_id,
-            house_id=effective_commanding_house_id,  # Owned by the Leader House
-            commander_name=new_name,
-            is_coalition=True,
-            army_type=first_army_type,
-            troop_count=0,
-            composition={},
-            location_x=ref_x,
-            location_y=ref_y,
-            status="IDLE",
-            treasury=0,
-        )
-        self.session.add(coalition)
-        await self.session.flush()  # Generate ID
-
-        # Calculate Totals & Create Contingents
-        contingents = []
-        total_comp = {}
-        total_cargo_comp = {}
-        total_troops = 0
-        total_cargo_troops = 0
-        total_gold = 0
-
-        for a in armies_to_merge:
-            # Create Contingent
-            # CRITICAL: We use a.house_id as 'original_house_id'.
-            # This preserves ownership even if the coalition leader is different.
-            contingents.append(
-                ArmyContingent(
-                    parent_army_id=coalition.army_id,
-                    original_house_id=a.house_id,
-                    troop_count=a.troop_count,
-                    composition=a.composition,
-                    cargo=a.cargo,
-                    treasury=a.treasury or 0,
-                )
-            )
-
-            # Sum stats
-            total_troops += a.troop_count
-            total_gold += a.treasury or 0
-
-            for unit, count in a.composition.items():
-                total_comp[unit] = total_comp.get(unit, 0) + count
-
-            if a.cargo:
-                total_cargo_troops += a.cargo.get("troop_count", 0)
-                for unit, count in a.cargo.get("composition", {}).items():
-                    total_cargo_comp[unit] = total_cargo_comp.get(unit, 0) + count
-
-        # Finalize the Coalition Army
-        coalition.composition = total_comp
-        coalition.troop_count = total_troops
-        coalition.treasury = total_gold
-
-        if total_cargo_troops > 0:
-            coalition.cargo = {
-                "commander": f"Embarked forces of {new_name}",
-                "troop_count": total_cargo_troops,
-                "composition": total_cargo_comp,
-            }
-
-        self.session.add_all(contingents)
-
-        # Delete old armies
-        for a in armies_to_merge:
-            await self.session.delete(a)
-
-        await self.session.commit()
-
-        unit_label = "ships" if first_army_type == "SEA" else "men"
-        cargo_label = (
-            f" and carrying **{total_cargo_troops} men**"
-            if total_cargo_troops > 0
-            else ""
-        )
-
-        return (
-            True,
-            f"🤝 **Coalition Formed!** The **{new_name}** has been created with **{total_troops} {unit_label}**{cargo_label}.",
-        )
-
-    async def form_coalition(
-        self,
-        game_id: int,
-        leader_user_id: int,
-        new_name: str,
-        army_ids: tuple,
-        bypass_auth: bool = False,
-        is_gm_override: bool = False,
-        acting_house_id: int | None = None,
-    ):
-        """
-        Merges multiple armies or fleets into a single new coalition army.
-        Supports GM overrides to merge armies from different houses.
-        """
-        if len(army_ids) < 2:
-            return False, "❌ You must select at least two units to form a coalition."
-
-        # Fetch all armies at once
-        armies_to_merge = await ArmyRepo.get_armies_by_ids(
-            self.session, list(set(army_ids))
-        )
-        if len(armies_to_merge) != len(set(army_ids)):
-            return False, "❌ One or more army IDs are invalid."
-
-        # Determine the Player (if not GM override)
-        player: GamePlayer | None = None
-        if not is_gm_override:
-            stmt = (
-                select(GamePlayer)
-                .join(User, User.user_id == GamePlayer.user_id)
-                .where(
-                    User.discord_id == leader_user_id,
-                    GamePlayer.game_id == game_id,
-                )
-            )
-            player = (await self.session.execute(stmt)).scalars().first()
-            if not player:
-                return False, "❌ System Error: Player not found."
-
-        # Determine the "Effective Commander" (Who owns the resulting coalition?)
-        effective_commanding_house_id: int | None = None
-
-        if is_gm_override:
-            if acting_house_id is None:
-                return (
-                    False,
-                    "❌ GM override requires an acting house ID (Target House).",
-                )
-            effective_commanding_house_id = acting_house_id
-        else:
-            if not player.claimed_house_id:
-                return False, "❌ You do not command a house."
-            effective_commanding_house_id = player.claimed_house_id
-
-        # Rigorous Validation Loop
-        first_army = armies_to_merge[0]
-        first_army_type = first_army.army_type
-        ref_x, ref_y = first_army.location_x, first_army.location_y
-
-        for army in armies_to_merge:
-            # 1. Check Authority
-            if not is_gm_override and not bypass_auth:
                 if player is None or not await self._check_command_authority(
                     player, army
                 ):
@@ -1603,6 +1422,9 @@ class WarfareService:
                     )
                 )
             )
+            await self.session.execute(
+                delete(MarchLog).where(MarchLog.army_id == a.army_id)
+            )
             # Now safe to delete
             await self.session.delete(a)
 
@@ -1696,6 +1518,9 @@ class WarfareService:
                         PendingInteraction.army2_id == coalition_army.army_id,
                     )
                 )
+            )
+            await self.session.execute(
+                delete(MarchLog).where(MarchLog.army_id == coalition_army.army_id)
             )
             await self.session.delete(coalition_army)
             await self.session.commit()
@@ -1880,6 +1705,10 @@ class WarfareService:
                         PendingInteraction.army2_id == army2.army_id,
                     )
                 )
+            )
+
+            await self.session.execute(
+                delete(MarchLog).where(MarchLog.army_id == army2.army_id)
             )
 
             # Perform the logic merge (Move composition keys)
@@ -2133,7 +1962,9 @@ class WarfareService:
                 )
             )
         )
-
+        await self.session.execute(
+            delete(MarchLog).where(MarchLog.army_id == land_army.army_id)
+        )
         await self.session.delete(land_army)
         await self.session.commit()
         return (
