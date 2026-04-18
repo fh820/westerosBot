@@ -4,13 +4,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 import re
 import datetime
+import uuid
 from typing import List, Literal
 from app.db.db_manager import get_session
 from app.db.models import User, GamePlayer, House, Character, PendingBannerCall
 from app.db.repositories import GameRepo
 from app.services.diplomacy_service import DiplomacyService
 from app.ui.paginator import Paginator
-from app.ui.social_views import ProposalView
+from app.ui.social_views import MultiConsentProposalView, ProposalView
 from app.checks import is_in_house_channel
 from app.ui.banner_view import BannerControlView
 from app.services.common import slugify
@@ -924,21 +925,37 @@ class DiplomacyCog(commands.Cog):
     async def meet(
         self,
         ctx: commands.Context,
-        target: discord.Member,
+        targets: commands.Greedy[discord.Member],
         *,
         location: str = "A Private Setting",
     ):
         """
-        Requests a private meeting with another player, creating a channel upon consent.
-        Usage: !meet @PlayerName location="The Wolf's Den"
+        Requests a private meeting with one or more players.
+        Usage: !meet @PlayerOne @PlayerTwo The Wolf's Den
         """
-        if target.bot or target == ctx.author:
-            return await ctx.send("❌ You cannot meet with a bot or yourself.")
+        if not targets:
+            return await ctx.send(
+                "Usage: `!meet @PlayerOne [@PlayerTwo ...] [location]`"
+            )
+
+        unique_targets = []
+        seen_ids = {ctx.author.id}
+        for target in targets:
+            if target.id in seen_ids:
+                continue
+            seen_ids.add(target.id)
+            unique_targets.append(target)
+
+        if not unique_targets:
+            return await ctx.send("You must invite at least one other player.")
+
+        if any(target.bot for target in unique_targets):
+            return await ctx.send("You cannot invite bots to a meeting.")
 
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
-                return await ctx.send("❌ No active game is running on this server.")
+                return await ctx.send("No active game is running on this server.")
 
             initiator_player = await session.scalar(
                 select(GamePlayer)
@@ -950,18 +967,44 @@ class DiplomacyCog(commands.Cog):
                     selectinload(GamePlayer.character), selectinload(GamePlayer.house)
                 )
             )
-            target_player = await session.scalar(
-                select(GamePlayer)
-                .join(User)
-                .where(User.discord_id == target.id, GamePlayer.game_id == game.game_id)
-                .options(
-                    selectinload(GamePlayer.character), selectinload(GamePlayer.house)
-                )
-            )
+            if not initiator_player:
+                return await ctx.send("You are not an active player in the game.")
 
-            if not initiator_player or not target_player:
+            target_ids = [target.id for target in unique_targets]
+            target_players = (
+                (
+                    await session.execute(
+                        select(GamePlayer)
+                        .join(User)
+                        .where(
+                            User.discord_id.in_(target_ids),
+                            GamePlayer.game_id == game.game_id,
+                        )
+                        .options(
+                            selectinload(GamePlayer.user),
+                            selectinload(GamePlayer.character),
+                            selectinload(GamePlayer.house),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            players_by_discord_id = {
+                player.user.discord_id: player
+                for player in target_players
+                if player.user and player.user.discord_id
+            }
+
+            missing_targets = [
+                target.display_name
+                for target in unique_targets
+                if target.id not in players_by_discord_id
+            ]
+            if missing_targets:
                 return await ctx.send(
-                    "❌ One or both participants are not active players in the game."
+                    "These invitees are not active players in the game: "
+                    + ", ".join(missing_targets)
                 )
 
             initiator_name = (
@@ -973,53 +1016,61 @@ class DiplomacyCog(commands.Cog):
                     else ctx.author.display_name
                 )
             )
-            target_name = (
-                target_player.character.name
-                if target_player.character
-                else (
-                    target_player.house.name
-                    if target_player.house
-                    else target.display_name
+
+            participant_members = [ctx.author] + unique_targets
+            participant_names = [initiator_name]
+            for target in unique_targets:
+                target_player = players_by_discord_id[target.id]
+                target_name = (
+                    target_player.character.name
+                    if target_player.character
+                    else (
+                        target_player.house.name
+                        if target_player.house
+                        else target.display_name
+                    )
                 )
-            )
+                participant_names.append(target_name)
 
             async def on_accept(interaction: discord.Interaction):
                 channel = await self._create_meeting_channel(
                     guild=interaction.guild,
-                    member1=ctx.author,
-                    member2=target,
                     location_str=location,
-                    name1=initiator_name,
-                    name2=target_name,
+                    members=participant_members,
+                    participant_names=participant_names,
                 )
 
                 if channel:
                     await interaction.followup.send(
-                        f"✅ The private meeting room has been created: {channel.mention}",
+                        f"The private meeting room has been created: {channel.mention}",
                         ephemeral=True,
                     )
                 else:
                     await interaction.followup.send(
-                        "❌ Failed to create the meeting room. Please check the bot's permissions.",
+                        "Failed to create the meeting room. Please check the bot's permissions.",
                         ephemeral=True,
                     )
 
             proposal_embed = discord.Embed(
-                title="📜 A Request for Audience",
-                description=f"**{initiator_name}** formally requests a private meeting with **{target_name}**.",
+                title="A Request for Audience",
+                description=(
+                    f"**{initiator_name}** formally requests a private meeting with:\n"
+                    + "\n".join(f"- **{name}**" for name in participant_names[1:])
+                ),
                 color=discord.Color.blurple(),
             )
+            proposal_embed.add_field(name="Location", value=location, inline=False)
 
-            view = ProposalView(
+            view = MultiConsentProposalView(
                 initiator=ctx.author,
-                consenter=target,
+                consenters=unique_targets,
                 action_name="Meeting",
                 proposal_embed=proposal_embed,
                 on_accept_callback=on_accept,
             )
 
             await ctx.send(
-                f"{target.mention}, you have received a proposal.",
+                f"{' '.join(target.mention for target in unique_targets)}, you have received a proposal.",
                 embed=proposal_embed,
                 view=view,
             )
@@ -1027,13 +1078,15 @@ class DiplomacyCog(commands.Cog):
     async def _create_meeting_channel(
         self,
         guild: discord.Guild,
-        member1: discord.Member,
-        member2: discord.Member,
-        location_str: str,
-        name1: str,
-        name2: str,
+        member1: discord.Member = None,
+        member2: discord.Member = None,
+        location_str: str = "A Private Setting",
+        name1: str = None,
+        name2: str = None,
+        members: list[discord.Member] = None,
+        participant_names: list[str] = None,
     ) -> discord.TextChannel | None:
-        """A generic helper to create a private meeting channel for two members."""
+        """Create a private meeting channel for two or more members."""
 
         category = discord.utils.get(guild.categories, name="Meetings")
         if not category:
@@ -1043,29 +1096,48 @@ class DiplomacyCog(commands.Cog):
                 print("ERROR: Bot lacks permission to create categories.")
                 return None
 
-        sanitized_name1 = re.sub(r"[^a-zA-Z0-9-]", "", name1.lower().replace(" ", "-"))
-        sanitized_name2 = re.sub(r"[^a-zA-Z0-9-]", "", name2.lower().replace(" ", "-"))
-        channel_name = f"meet-{sanitized_name1[:15]}-{sanitized_name2[:15]}"
+        if members is None:
+            members = [member for member in [member1, member2] if member is not None]
+        if participant_names is None:
+            participant_names = [name for name in [name1, name2] if name is not None]
+
+        unique_members = []
+        seen_member_ids = set()
+        for member in members:
+            if member.id in seen_member_ids:
+                continue
+            seen_member_ids.add(member.id)
+            unique_members.append(member)
+
+        if len(unique_members) < 2:
+            return None
+
+        if len(participant_names) != len(unique_members):
+            participant_names = [member.display_name for member in unique_members]
+
+        location_slug = slugify(location_str) or "private-setting"
+        unique_suffix = uuid.uuid4().hex[:6]
+        channel_name = f"meet-{location_slug[:40]}-{unique_suffix}"[:100]
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            member1: discord.PermissionOverwrite(
-                read_messages=True, send_messages=True
-            ),
-            member2: discord.PermissionOverwrite(
-                read_messages=True, send_messages=True
-            ),
             guild.me: discord.PermissionOverwrite(
                 read_messages=True, send_messages=True
             ),
         }
+        for member in unique_members:
+            overwrites[member] = discord.PermissionOverwrite(
+                read_messages=True, send_messages=True
+            )
+
+        participant_text = ", ".join(participant_names)
 
         try:
             channel = await guild.create_text_channel(
                 name=channel_name,
                 category=category,
                 overwrites=overwrites,
-                topic=f"A private meeting between {name1} and {name2}.",
+                topic=f"A private meeting for: {participant_text}.",
             )
         except discord.Forbidden:
             print(f"ERROR: Bot lacks permission to create channel '{channel_name}'.")
@@ -1073,12 +1145,14 @@ class DiplomacyCog(commands.Cog):
 
         welcome_embed = discord.Embed(
             title="Meeting Room",
-            description=f"This is a private channel for **{name1}** and **{name2}**.",
+            description="This is a private channel for:\n"
+            + "\n".join(f"- **{name}**" for name in participant_names),
             color=discord.Color.dark_grey(),
         )
-        welcome_embed.add_field(name="📍 Location", value=location_str)
+        welcome_embed.add_field(name="Location", value=location_str)
         await channel.send(
-            f"The meeting may now begin. {member1.mention} {member2.mention}",
+            "The meeting may now begin. "
+            + " ".join(member.mention for member in unique_members),
             embed=welcome_embed,
         )
 

@@ -865,7 +865,12 @@ class BattleService:
         stmt = (
             select(Battle)
             .where(Battle.id == battle_id)
-            .options(selectinload(Battle.game))
+            .options(
+                selectinload(Battle.game),
+                # --- FIX: Add these to prevent MissingGreenlet in tasks ---
+                selectinload(Battle.attacker).selectinload(Army.house),
+                selectinload(Battle.defender).selectinload(Army.house)
+            )
         )
         battle = (await self.session.execute(stmt)).scalars().first()
         if not battle:

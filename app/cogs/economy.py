@@ -37,6 +37,8 @@ class EconomyCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    MONEY_TYPES = {"FIEF", "ARMY", "HOUSE"}
+
     async def _get_player_house(self, session, ctx) -> House | None:
         """Correctly fetches the player's active house for the current game."""
         game = await GameRepo.get_active_game(session, ctx.guild.id)
@@ -57,6 +59,191 @@ class EconomyCog(commands.Cog):
             .options(selectinload(GamePlayer.house))
         )
         return player.house if player else None
+
+    def _gold_help_text(self, is_gm: bool = False) -> str:
+        prefix = "!gm_gold" if is_gm else "!gold"
+        return (
+            f"**Gold Commands**\n"
+            f"`{prefix} send <amount> from <source> to <target>`\n"
+            f"`{prefix} check <source>`\n\n"
+            "**Sources and targets:**\n"
+            "`fief Winterfell`, `army 123`, `fleet 456`, `house Stark`\n\n"
+            "**Examples:**\n"
+            f"`{prefix} send 500 from fief Winterfell to army 123`\n"
+            f"`{prefix} send 300 from army 123 to local_fief`\n"
+            f"`{prefix} send 1000 from fief Winterfell to fief \"Deepwood Motte\"`\n"
+            f"`{prefix} check fief Winterfell`"
+        )
+
+    async def _ensure_money_channel(self, ctx) -> bool:
+        if await is_in_house_channel(ctx):
+            return True
+        await ctx.send(
+            "Error: Use money commands in your house quarters or an allowed bot channel."
+        )
+        return False
+
+    def _split_gold_route(self, route: str) -> tuple[str | None, str | None]:
+        text = route.strip()
+        lowered = text.lower()
+        if not lowered.startswith("from "):
+            return None, None
+
+        body = text[5:].strip()
+        lowered_body = body.lower()
+        marker = " to "
+        marker_index = lowered_body.find(marker)
+        if marker_index == -1:
+            return None, None
+
+        source_text = body[:marker_index].strip().strip('"')
+        target_text = body[marker_index + len(marker) :].strip().strip('"')
+        if not source_text or not target_text:
+            return None, None
+        return source_text, target_text
+
+    async def _resolve_house_endpoint(self, session, game, ident: str) -> House | None:
+        stmt = select(House).where(House.game_id == game.game_id)
+        if ident.isdigit():
+            stmt = stmt.where(House.house_id == int(ident))
+        else:
+            stmt = stmt.where(House.name.ilike(ident))
+        return (await session.execute(stmt)).scalars().first()
+
+    async def _resolve_fief_endpoint(self, session, game, ident: str) -> Fief | None:
+        stmt = select(Fief).where(Fief.game_id == game.game_id)
+        if ident.isdigit():
+            stmt = stmt.where(Fief.fief_id == int(ident))
+        else:
+            stmt = stmt.where(Fief.name.ilike(ident))
+        return (await session.execute(stmt)).scalars().first()
+
+    async def _resolve_army_endpoint(self, session, game, ident: str) -> Army | None:
+        if not ident.isdigit():
+            return None
+        stmt = select(Army).where(
+            Army.game_id == game.game_id,
+            Army.army_id == int(ident),
+        )
+        return (await session.execute(stmt)).scalars().first()
+
+    async def _find_local_fief_for_army(self, session, game, army: Army) -> Fief | None:
+        stmt = select(Fief).where(
+            Fief.game_id == game.game_id,
+            Fief.location_x == army.location_x,
+            Fief.location_y == army.location_y,
+        )
+        return (await session.execute(stmt)).scalars().first()
+
+    def _endpoint_label(self, endpoint: dict) -> str:
+        obj = endpoint["obj"]
+        etype = endpoint["type"]
+        if etype == "FIEF":
+            return f"Fief {obj.name} (ID: {obj.fief_id})"
+        if etype == "ARMY":
+            noun = "Fleet" if getattr(obj, "army_type", "") == "SEA" else "Army"
+            name = obj.commander_name or f"{noun} {obj.army_id}"
+            return f"{noun} {name} (ID: {obj.army_id})"
+        if etype == "HOUSE":
+            return f"House {obj.name} Treasury (ID: {obj.house_id})"
+        return "Unknown"
+
+    def _endpoint_owner_id(self, endpoint: dict) -> int | None:
+        obj = endpoint["obj"]
+        if endpoint["type"] == "FIEF":
+            return obj.owner_id
+        if endpoint["type"] == "ARMY":
+            return obj.house_id
+        if endpoint["type"] == "HOUSE":
+            return obj.house_id
+        return None
+
+    async def _resolve_money_endpoint(
+        self,
+        session,
+        game,
+        raw_text: str,
+        *,
+        player_house: House | None = None,
+        source_endpoint: dict | None = None,
+    ) -> tuple[dict | None, str | None]:
+        text = raw_text.strip().strip('"')
+        lowered = text.lower()
+
+        if lowered in {"capital", "capital_fief", "default_fief"}:
+            if not player_house:
+                return None, "`capital` can only be used by a player with a house."
+            stmt = (
+                select(Fief)
+                .where(Fief.owner_id == player_house.house_id)
+                .order_by(Fief.fief_id.asc())
+                .limit(1)
+            )
+            fief = (await session.execute(stmt)).scalars().first()
+            if not fief:
+                return None, f"House {player_house.name} has no fiefs."
+            return {"type": "FIEF", "id": fief.fief_id, "obj": fief}, None
+
+        if lowered in {"treasury", "house_treasury"}:
+            if not player_house:
+                return None, "`treasury` can only be used by a player with a house."
+            return (
+                {"type": "HOUSE", "id": player_house.house_id, "obj": player_house},
+                None,
+            )
+
+        if lowered == "local_fief":
+            if not source_endpoint or source_endpoint["type"] != "ARMY":
+                return None, "`local_fief` only works when the source is an army/fleet."
+            fief = await self._find_local_fief_for_army(
+                session, game, source_endpoint["obj"]
+            )
+            if not fief:
+                return None, "That army/fleet is not standing at a registered fief."
+            return {"type": "FIEF", "id": fief.fief_id, "obj": fief}, None
+
+        parts = text.split(maxsplit=1)
+        type_word = parts[0].upper() if parts else ""
+        ident = parts[1].strip().strip('"') if len(parts) > 1 else ""
+
+        if type_word == "FLEET":
+            type_word = "ARMY"
+        if type_word in self.MONEY_TYPES:
+            if not ident:
+                return None, f"Please provide a name or ID after `{parts[0]}`."
+            if type_word == "FIEF":
+                fief = await self._resolve_fief_endpoint(session, game, ident)
+                if not fief:
+                    return None, f"Fief `{ident}` was not found."
+                return {"type": "FIEF", "id": fief.fief_id, "obj": fief}, None
+            if type_word == "ARMY":
+                army = await self._resolve_army_endpoint(session, game, ident)
+                if not army:
+                    return None, f"Army/Fleet `{ident}` was not found."
+                return {"type": "ARMY", "id": army.army_id, "obj": army}, None
+            house = await self._resolve_house_endpoint(session, game, ident)
+            if not house:
+                return None, f"House `{ident}` was not found."
+            return {"type": "HOUSE", "id": house.house_id, "obj": house}, None
+
+        if text.isdigit():
+            army = await self._resolve_army_endpoint(session, game, text)
+            if army:
+                return {"type": "ARMY", "id": army.army_id, "obj": army}, None
+            return None, f"`{text}` did not match an army/fleet ID."
+
+        fief = await self._resolve_fief_endpoint(session, game, text)
+        house = await self._resolve_house_endpoint(session, game, text)
+        if fief and house:
+            return (
+                None,
+                f"`{text}` matches both a fief and a house. Use `fief {text}` or `house {text}`.",
+            )
+        if fief:
+            return {"type": "FIEF", "id": fief.fief_id, "obj": fief}, None
+        if house:
+            return {"type": "HOUSE", "id": house.house_id, "obj": house}, None
+        return None, f"`{text}` was not found. Try `fief {text}`, `house {text}`, or `army <id>`."
 
     @commands.command(
         name="market", help="Displays the current prices for buying and selling units."
@@ -717,6 +904,108 @@ class EconomyCog(commands.Cog):
                 f"💰 **{name} (ID: {asset.army_id})** Treasury: **{gold} Gold**"
             )
 
+    @commands.group(name="gold", invoke_without_command=True)
+    async def gold(self, ctx):
+        """Player gold command hub."""
+        await ctx.send(self._gold_help_text(is_gm=False))
+
+    @gold.command(name="send")
+    async def gold_send(self, ctx, amount: int, *, route: str):
+        """
+        Unified player transfer command.
+        Usage: !gold send 500 from fief Winterfell to army 123
+        """
+        if not await self._ensure_money_channel(ctx):
+            return
+
+        if amount <= 0:
+            return await ctx.send("Error: Amount must be positive.")
+
+        source_text, target_text = self._split_gold_route(route)
+        if not source_text or not target_text:
+            return await ctx.send(
+                "Error: Use `!gold send <amount> from <source> to <target>`.\n"
+                "Example: `!gold send 500 from fief Winterfell to army 123`"
+            )
+
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("Error: No active game.")
+
+            player_house = await self._get_player_house(session, ctx)
+            if not player_house:
+                return await ctx.send("Error: You do not command a House.")
+
+            source, err = await self._resolve_money_endpoint(
+                session, game, source_text, player_house=player_house
+            )
+            if err:
+                return await ctx.send(f"Error: {err}")
+
+            if self._endpoint_owner_id(source) != player_house.house_id:
+                return await ctx.send(
+                    f"Error: You do not control the source: **{self._endpoint_label(source)}**."
+                )
+
+            target, err = await self._resolve_money_endpoint(
+                session,
+                game,
+                target_text,
+                player_house=player_house,
+                source_endpoint=source,
+            )
+            if err:
+                return await ctx.send(f"Error: {err}")
+
+            service = EconomyService(session)
+            success, msg = await service.execute_transfer(
+                amount=amount,
+                source_type=source["type"],
+                source_id=source["id"],
+                target_type=target["type"],
+                target_id=target["id"],
+            )
+            await ctx.send(msg if success else f"Error: {msg}")
+
+    @gold.command(name="check")
+    async def gold_check(self, ctx, *, target: str = None):
+        """
+        Checks one player-accessible money pocket.
+        Usage: !gold check fief Winterfell
+        """
+        if not await self._ensure_money_channel(ctx):
+            return
+
+        if not target:
+            return await ctx.send(
+                "Use `!gold check <source>`, such as `!gold check fief Winterfell`."
+            )
+
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("Error: No active game.")
+
+            player_house = await self._get_player_house(session, ctx)
+            if not player_house:
+                return await ctx.send("Error: You do not command a House.")
+
+            endpoint, err = await self._resolve_money_endpoint(
+                session, game, target, player_house=player_house
+            )
+            if err:
+                return await ctx.send(f"Error: {err}")
+            if self._endpoint_owner_id(endpoint) != player_house.house_id:
+                return await ctx.send(
+                    f"Error: You do not control **{self._endpoint_label(endpoint)}**."
+                )
+
+            balance = endpoint["obj"].treasury or 0
+            await ctx.send(
+                f"Gold: **{self._endpoint_label(endpoint)}**: **{balance:,} Gold**"
+            )
+
     @commands.command(name="transfer_gold")
     @commands.check(is_in_house_channel)
     async def transfer_gold(
@@ -927,6 +1216,89 @@ class EconomyCog(commands.Cog):
             await ctx.send(msg if success else f"❌ {msg}")
 
     # --- 3. GM ECONOMY COMMANDS ---
+
+    @commands.group(name="gm_gold", invoke_without_command=True)
+    @commands.check(is_gm)
+    async def gm_gold(self, ctx):
+        """GM gold command hub."""
+        await ctx.send(self._gold_help_text(is_gm=True))
+
+    @gm_gold.command(name="send")
+    async def gm_gold_send(self, ctx, amount: int, *, route: str):
+        """
+        Unified GM transfer command.
+        Usage: !gm_gold send 500 from fief Winterfell to army 123
+        """
+        if amount <= 0:
+            return await ctx.send("Error: Amount must be positive.")
+
+        source_text, target_text = self._split_gold_route(route)
+        if not source_text or not target_text:
+            return await ctx.send(
+                "Error: Use `!gm_gold send <amount> from <source> to <target>`.\n"
+                "Example: `!gm_gold send 500 from fief Winterfell to army 123`"
+            )
+
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("Error: No active game.")
+
+            source, err = await self._resolve_money_endpoint(
+                session, game, source_text
+            )
+            if err:
+                return await ctx.send(f"Error: {err}")
+
+            target, err = await self._resolve_money_endpoint(
+                session, game, target_text, source_endpoint=source
+            )
+            if err:
+                return await ctx.send(f"Error: {err}")
+
+            service = EconomyService(session)
+            success, msg = await service.execute_transfer(
+                amount=amount,
+                source_type=source["type"],
+                source_id=source["id"],
+                target_type=target["type"],
+                target_id=target["id"],
+            )
+
+            color = discord.Color.green() if success else discord.Color.red()
+            embed = discord.Embed(title="GM Gold Transfer", description=msg, color=color)
+            await ctx.send(embed=embed)
+
+    @gm_gold.command(name="check")
+    async def gm_gold_check(self, ctx, *, target: str):
+        """
+        Checks one money pocket by name or ID.
+        Usage: !gm_gold check fief Winterfell
+        """
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("Error: No active game.")
+
+            endpoint, err = await self._resolve_money_endpoint(session, game, target)
+            if err:
+                return await ctx.send(f"Error: {err}")
+
+            balance = endpoint["obj"].treasury or 0
+            await ctx.send(
+                f"Gold: **{self._endpoint_label(endpoint)}**: **{balance:,} Gold**"
+            )
+
+    @gm_gold.command(name="audit", aliases=["economy", "bal", "balance"])
+    async def gm_gold_audit(self, ctx, *, house_identifier: str):
+        """
+        Alias for the full GM house ledger.
+        Usage: !gm_gold audit Stark
+        """
+        command = self.bot.get_command("gm_econ economy")
+        if not command:
+            return await ctx.send("Error: GM economy audit command is unavailable.")
+        await ctx.invoke(command, house_identifier=house_identifier)
 
     @commands.group(name="gm_econ", invoke_without_command=True)
     @commands.check(is_gm)
@@ -1841,7 +2213,7 @@ class EconomyCog(commands.Cog):
             )
 
             embed.set_footer(
-                text="Use !transfer_gold to move funds between these containers."
+                text="Use !gold send <amount> from <source> to <target> to move funds."
             )
 
             await ctx.send(embed=embed)

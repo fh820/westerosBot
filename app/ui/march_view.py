@@ -511,6 +511,7 @@ class JourneyArmySelectView(discord.ui.View):
     def __init__(self, bot: commands.Bot, armies: list):
         super().__init__(timeout=180)
         self.bot = bot
+        print('sfd')
 
         options = []
         for army in armies[:25]:
