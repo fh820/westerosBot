@@ -62,6 +62,14 @@ SEA_LOSER_CASUALTY_TABLE = {
     5: 0.72,
 }
 
+LAND_AMBUSH_BONUSES = {"extreme": 15, "good": 10, "decent": 5, "failed": -5}
+LAND_DEFENSE_BONUSES = {"major": 20, "significant": 10, "minor": 5}
+BATTLE_OUTNUMBER_THRESHOLD = 2.0
+BATTLE_OUTNUMBER_BONUS = 4
+BATTLE_ODDS_MIN = 1
+BATTLE_ODDS_MAX = 99
+BATTLE_MOMENTUM_PER_SCORE = 5
+
 
 class BattleService:
     def __init__(self, session: Session):
@@ -139,6 +147,72 @@ class BattleService:
         )
         return total_value, total_value / 250.0
 
+    def _get_field_battle_type(self, attacker: Army, defender: Army):
+        if attacker.army_type != defender.army_type:
+            return None
+        return "SEA_BATTLE" if attacker.army_type == "SEA" else "LAND_BATTLE"
+
+    def _apply_outnumbering_bonus(self, attacker: Army, defender: Army, att_bonus, def_bonus):
+        if attacker.troop_count > defender.troop_count * BATTLE_OUTNUMBER_THRESHOLD:
+            att_bonus += BATTLE_OUTNUMBER_BONUS
+        elif defender.troop_count > attacker.troop_count * BATTLE_OUTNUMBER_THRESHOLD:
+            def_bonus += BATTLE_OUTNUMBER_BONUS
+        return att_bonus, def_bonus
+
+    def _odds_from_totals(self, att_total, def_total, min_odds=BATTLE_ODDS_MIN, max_odds=BATTLE_ODDS_MAX):
+        if att_total + def_total == 0:
+            odds = 50
+        else:
+            odds = (att_total / (att_total + def_total)) * 100
+        return int(max(min_odds, min(max_odds, odds)))
+
+    async def _calculate_field_battle_odds(
+        self,
+        attacker: Army,
+        defender: Army,
+        battle_type: str,
+        ambush: str = "none",
+        defense: str = "none",
+        att_bonus_override: int = 0,
+        def_bonus_override: int = 0,
+        att_cmd_override=None,
+        def_cmd_override=None,
+        score_diff: int = 0,
+    ):
+        _, att_bp = self._calculate_army_bp(attacker)
+        _, def_bp = self._calculate_army_bp(defender)
+
+        att_martial = (
+            att_cmd_override
+            if att_cmd_override is not None
+            else await self._get_army_martial(attacker)
+        )
+        def_martial = (
+            def_cmd_override
+            if def_cmd_override is not None
+            else await self._get_army_martial(defender)
+        )
+
+        att_bonus = (att_martial / 3.0) + att_bonus_override
+        def_bonus = (def_martial / 3.0) + def_bonus_override
+
+        if battle_type == "LAND_BATTLE":
+            att_bonus += LAND_AMBUSH_BONUSES.get((ambush or "none").lower(), 0)
+            def_bonus += LAND_DEFENSE_BONUSES.get((defense or "none").lower(), 0)
+
+        att_bonus, def_bonus = self._apply_outnumbering_bonus(
+            attacker, defender, att_bonus, def_bonus
+        )
+
+        odds = self._odds_from_totals(att_bp + att_bonus, def_bp + def_bonus)
+        odds = int(
+            max(
+                BATTLE_ODDS_MIN,
+                min(BATTLE_ODDS_MAX, odds + (score_diff * BATTLE_MOMENTUM_PER_SCORE)),
+            )
+        )
+        return odds, att_bp, def_bp, att_bonus, def_bonus
+
     def _stop_movement_immediately(self, army):
         """
         Stops an army in its tracks.
@@ -198,37 +272,20 @@ class BattleService:
             return None
 
         attacker, defender = battle.attacker, battle.defender
-        _, att_bp = self._calculate_army_bp(attacker)
-        _, def_bp = self._calculate_army_bp(defender)
+        battle_type = self._get_field_battle_type(attacker, defender)
+        if not battle_type:
+            return None
 
-        att_martial = (
-            att_cmd_override
-            if att_cmd_override is not None
-            else await self._get_army_martial(attacker)
+        battle.current_odds, _, _, _, _ = await self._calculate_field_battle_odds(
+            attacker,
+            defender,
+            battle_type,
+            att_bonus_override=att_bonus,
+            def_bonus_override=def_bonus,
+            att_cmd_override=att_cmd_override,
+            def_cmd_override=def_cmd_override,
+            score_diff=battle.attacker_score - battle.defender_score,
         )
-        def_martial = (
-            def_cmd_override
-            if def_cmd_override is not None
-            else await self._get_army_martial(defender)
-        )
-
-        att_total = att_bp + (att_martial / 3.0) + att_bonus
-        def_total = def_bp + (def_martial / 3.0) + def_bonus
-
-        if attacker.troop_count > defender.troop_count * 2.0:
-            att_total += 10
-        elif defender.troop_count > attacker.troop_count * 2.0:
-            def_total += 10
-
-        if att_total + def_total == 0:
-            odds = 50
-        else:
-            odds = (att_total / (att_total + def_total)) * 100
-        # Momentum adjustment
-        score_diff = battle.attacker_score - battle.defender_score
-        odds += score_diff * 5
-
-        battle.current_odds = int(max(1, min(99, odds)))
         await self.session.commit()
         return battle
 
@@ -247,38 +304,12 @@ class BattleService:
         if attacker.army_type != defender.army_type:
             return None, "❌ Cannot mix land and sea.", None
 
-        battle_type = "SEA_BATTLE" if attacker.army_type == "SEA" else "LAND_BATTLE"
-        _, att_bp = self._calculate_army_bp(attacker)
-        _, def_bp = self._calculate_army_bp(defender)
-
-        att_martial = await self._get_army_martial(attacker)
-        def_martial = await self._get_army_martial(defender)
-
-        att_bonus = att_martial / 3.0
-        def_bonus = def_martial / 3.0
-        if battle_type == "LAND_BATTLE":
-            att_bonus += {"extreme": 15, "good": 10, "decent": 5, "failed": -5}.get(
-                ambush.lower(), 0
+        battle_type = self._get_field_battle_type(attacker, defender)
+        odds, att_bp, def_bp, att_bonus, def_bonus = (
+            await self._calculate_field_battle_odds(
+                attacker, defender, battle_type, ambush=ambush, defense=defense
             )
-            def_bonus += {"major": 20, "significant": 10, "minor": 5}.get(
-                defense.lower(), 0
-            )
-
-        if attacker.troop_count > defender.troop_count * 2.0:
-            att_bonus += 4
-        elif defender.troop_count > attacker.troop_count * 2.0:
-            def_bonus += 4
-
-        att_total = att_bp + att_bonus
-        def_total = def_bp + def_bonus
-
-        # To avoid division by zero error if both armies have 0 power
-        if att_total + def_total == 0:
-            odds = 50
-        else:
-            odds = (att_total / (att_total + def_total)) * 100
-
-        odds = int(max(1, min(99, odds)))  # Keep the 1-99 clamp
+        )
 
         new_battle = Battle(
             game_id=game_id,
@@ -778,51 +809,13 @@ class BattleService:
 
         if not attacker or not defender:
             return None, "Armies not found.", None
+        if attacker.army_type != defender.army_type:
+            return None, "Cannot mix land and sea.", None
 
-        # Determine type based on attacker (same as manual)
-        battle_type = "SEA_BATTLE" if attacker.army_type == "SEA" else "LAND_BATTLE"
-
-        # 1. Calculate Base Power
-        _, att_bp = self._calculate_army_bp(attacker)
-        _, def_bp = self._calculate_army_bp(defender)
-
-        # 2. Get Martial Scores
-        att_martial = await self._get_army_martial(attacker)
-        def_martial = await self._get_army_martial(defender)
-
-        # 3. Calculate Bonuses (Martial / 3)
-        att_bonus = att_martial / 3.0
-        def_bonus = def_martial / 3.0
-
-        # 4. Apply Terrain/Ambush Modifiers (Only for LAND)
-        # Note: battle_tasks.py currently passes "none", but this logic ensures
-        # it handles it correctly if that changes in the future.
-        if battle_type == "LAND_BATTLE":
-            att_bonus += {"extreme": 15, "good": 10, "decent": 5, "failed": -5}.get(
-                ambush.lower(), 0
-            )
-            def_bonus += {"major": 20, "significant": 10, "minor": 5}.get(
-                defense.lower(), 0
-            )
-
-        # 5. Apply Outnumbering Bonus
-        if attacker.troop_count > defender.troop_count * 1.2:
-            att_bonus += 4
-        elif defender.troop_count > attacker.troop_count * 1.2:
-            def_bonus += 4
-
-        # 6. Calculate Totals
-        att_total = att_bp + att_bonus
-        def_total = def_bp + def_bonus
-
-        # 7. Calculate Odds (Ratio Method - FIX APPLIED HERE)
-        if att_total + def_total == 0:
-            odds = 50
-        else:
-            odds = (att_total / (att_total + def_total)) * 100
-
-        # Clamp 1-99
-        odds = int(max(1, min(99, odds)))
+        battle_type = self._get_field_battle_type(attacker, defender)
+        odds, _, _, _, _ = await self._calculate_field_battle_odds(
+            attacker, defender, battle_type, ambush=ambush, defense=defense
+        )
 
         new_battle = Battle(
             game_id=game_id,
@@ -976,6 +969,9 @@ class BattleService:
 
         if not attacker or not fief:
             return None, "❌ Target not found.", None
+
+        if attacker.army_type != "LAND":
+            return None, "❌ Only land armies can start a siege.", None
 
         stmt_d = (
             select(Army)
