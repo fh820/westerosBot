@@ -79,6 +79,7 @@ In-character/public:
 - `battle-rumours`
 - `battle-reports`
 - `rumours`
+- `gambling-den`
 - `marriages`
 - `declarations`
 - `general-movements`
@@ -92,6 +93,71 @@ In-character/public:
 - `tournament`
 
 Player quarters are created later during claim approval.
+
+## World Chronicle
+
+The world chronicle is a lightweight GM timeline. It records important campaign events in the database so a GM can quickly see what happened, in what order, without digging through Discord history.
+
+View recent events:
+
+```text
+!gm_chronicle
+```
+
+View a specific number of recent events:
+
+```text
+!gm_chronicle 50
+```
+
+Filter by category or search text:
+
+```text
+!gm_chronicle battle
+!gm_chronicle siege
+!gm_chronicle fief
+!gm_chronicle 30 Riverrun
+!gm_chronicle 30 "Storm's End"
+```
+
+Aliases:
+
+```text
+!chronicle
+!timeline
+```
+
+Add a manual GM note:
+
+```text
+!gm_log_note The river crossing at Ruby Ford was closed by GM ruling.
+```
+
+The chronicle is GM-facing and concise. It is not the same as `#gm-alerts`: GM alerts contain live operational detail and math audits, while the chronicle records timeline facts such as battle starts, phase results, battle cancellations, siege turns, siege conclusions, and fief captures.
+
+## Gambling
+
+Setup creates `#gambling-den` as a public in-character channel for casual gambling.
+
+Blackjack command:
+
+```text
+!gamble
+!blackjack <bet>
+!bj <bet>
+```
+
+The wager comes from the player's house treasury. The command uses button controls for `Hit`, `Stand`, and `Double`.
+
+Payouts:
+
+- Normal win: stake returned plus equal winnings.
+- Blackjack: stake returned plus 1.5x winnings.
+- Push: stake returned.
+- Loss: wager is kept.
+- Double: charges a second copy of the original bet, draws one card, then stands.
+
+The current maximum bet is 10,000 gold.
 
 ### Roles Created
 
@@ -904,25 +970,29 @@ This does not move the army.
 ### GM Split/Merge
 
 ```text
-!gm_war split <house_id> <army_id> <amount> <new_name>
-!gm_war merge <house_id> <target_id> <source_ids...>
+!gm_war army_split <house_id> <army_id> <amount> <new_name>
+!gm_war army_merge <house_id> <target_id> <source_ids...>
 !gm_war merge_all <house_id> <location_name>
 ```
 
 Examples:
 
 ```text
-!gm_war split 101 123 500 Vanguard
-!gm_war merge 101 123 124 125
+!gm_war army_split 101 123 500 Vanguard
+!gm_war army_merge 101 123 124 125
 !gm_war merge_all 101 Riverrun
 ```
+
+Aliases: `!gm_war split`, `!gm_war merge`
 
 ### GM Coalition
 
 ```text
-!gm_war form_coalition <leader_house_id> <new_name> <army_ids...>
-!gm_war disband_coalition <target_house_id> <army_id>
+!gm_war army_coalition <leader_house_id> <new_name> <army_ids...>
+!gm_war coalition_disband <target_house_id> <army_id>
 ```
+
+Aliases: `!gm_war form_coalition`, `!gm_war disband_coalition`
 
 ### GM Embark/Disembark
 
@@ -949,15 +1019,16 @@ Example:
 !gm_war occupy <target_house_id> <army_id>
 ```
 
-### GM Delete, Transfer, Reassign Armies
+### GM Delete, Force Merge, Reassign Armies
 
 ```text
 !gm_war delete_army <army_id>
-!gm_war transfer <source_army_id> <target_army_id>
+!gm_war force_merge <source_army_id> <target_army_id>
 !gm_war reassign <army_id> <target_house_id>
 ```
 
-These are strong override tools. Use carefully.
+These are strong override tools. `force_merge` bypasses normal merge rules, deletes the source army, and moves its troops, treasury, and fleet cargo into the target.
+Alias: `!gm_war transfer`
 
 ### GM Commander And Casualties
 
@@ -1346,7 +1417,7 @@ Or, to remove Discord channels/roles too:
 ## Safety Notes
 
 - Prefer normal player commands when possible; GM commands often bypass ownership/location rules.
-- Be careful with `delete_army`, `transfer`, `reassign`, `force_grant`, and `end_game`.
+- Be careful with `delete_army`, `force_merge`/`transfer`, `reassign`, `force_grant`, and `end_game`.
 - Use `!gm_info`, `!gm_econ economy`, and `!gm_war scan_location` before destructive changes.
 - If a player-facing command fails, check whether they are using the correct private channel.
 - If a background event does not fire, check Redis, Celery worker, Celery beat, and task registration.

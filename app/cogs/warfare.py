@@ -1650,10 +1650,10 @@ class WarfareCog(commands.Cog):
                     view = Paginator(embeds)
                     await ctx.send(embed=embeds[0], view=view)
 
-    @commands.command(name="split")
+    @commands.command(name="army_split", aliases=["split"])
     @commands.check(is_in_house_channel)
     async def split(self, ctx, army_id: int, amount: int, *, new_name: str):
-        """Splits an army. Usage: !split [ID] [Amount] [Name]"""
+        """Splits an army. Usage: !army_split [ID] [Amount] [Name]"""
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             stmt = select(User).where(User.discord_id == ctx.author.id)
@@ -1665,16 +1665,18 @@ class WarfareCog(commands.Cog):
             )
             await ctx.send(msg)
 
-    @commands.command(name="merge")
+    @commands.command(name="army_merge", aliases=["merge"])
     @commands.check(is_in_house_channel)
     async def merge(self, ctx, target_id: int, source_ids: commands.Greedy[int]):
         """
         Merges one or more armies into a target army.
-        Usage: !merge [Target_ID] [Source_ID_1] [Source_ID_2] ...
-        Example: !merge 100 101 102 (Merges 101 and 102 into 100)
+        Usage: !army_merge [Target_ID] [Source_ID_1] [Source_ID_2] ...
+        Example: !army_merge 100 101 102 (Merges 101 and 102 into 100)
         """
         if not source_ids:
-            return await ctx.send("❌ Usage: `!merge [Target_ID] [Source_ID_1] ...`")
+            return await ctx.send(
+                "❌ Usage: `!army_merge [Target_ID] [Source_ID_1] ...`"
+            )
 
         # Convert Greedy list to a standard list and remove duplicates/target_id
         source_ids = list(set(source_ids))
@@ -1695,13 +1697,13 @@ class WarfareCog(commands.Cog):
             )
             await ctx.send(msg)
 
-    @commands.command(name="form_coalition")
+    @commands.command(name="army_coalition", aliases=["form_coalition"])
     async def form_coalition(self, ctx, new_name: str, *army_ids: int):
         """
         Merges multiple armies.
         - If you own all armies, they merge instantly.
         - If armies are owned by multiple players, a consent proposal is created.
-        Usage: !form_coalition "Name" 101 102 103
+        Usage: !army_coalition "Name" 101 102 103
         """
         if not army_ids:
             return await ctx.send("❌ You must provide at least two army IDs.")
@@ -1773,10 +1775,10 @@ class WarfareCog(commands.Cog):
                     view=view,
                 )
 
-    @commands.command(name="disband")
+    @commands.command(name="coalition_disband", aliases=["disband"])
     @commands.check(is_in_house_channel)
     async def disband_coalition(self, ctx, army_id: int):
-        """Disbands a coalition. Usage: !disband [ID]"""
+        """Disbands a coalition. Usage: !coalition_disband [ID]"""
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             stmt = select(User).where(User.discord_id == ctx.author.id)
@@ -2118,7 +2120,7 @@ class WarfareCog(commands.Cog):
     async def gm_war(self, ctx):
         """GM commands for warfare and army management for NPCs."""
         await ctx.send(
-            "GM Warfare Subcommands: `march`, `sail`, `stop`, `split`, `merge`, `form_coalition`, `disband_coalition`, `embark`, `disembark`, `recruit`, `occupy`, `redirect`."
+            "GM Warfare Subcommands: `march`, `sail`, `stop`, `army_split`, `army_merge`, `army_coalition`, `coalition_disband`, `force_merge`, `embark`, `disembark`, `recruit`, `occupy`, `redirect`."
         )
 
     @gm_war.command(name="march")
@@ -2419,12 +2421,12 @@ class WarfareCog(commands.Cog):
             )
             await ctx.send(f"✅ GM Command: {msg}")
 
-    @gm_war.command(name="split")
+    @gm_war.command(name="army_split", aliases=["split"])
     @commands.check(is_gm)
     async def gm_split(
         self, ctx, target_house_id: int, army_id: int, amount: int, *, new_name: str
     ):
-        """GM: Split an NPC house's army. Usage: !gm_war split [HouseID] [ArmyID] [Amount] [NewName]"""
+        """GM: Split an NPC house's army. Usage: !gm_war army_split [HouseID] [ArmyID] [Amount] [NewName]"""
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
@@ -2448,7 +2450,7 @@ class WarfareCog(commands.Cog):
             )
             await ctx.send(f"✅ GM Command: {msg}")
 
-    @gm_war.command(name="merge")
+    @gm_war.command(name="army_merge", aliases=["merge"])
     @commands.check(is_gm)
     async def gm_merge(
         self,
@@ -2459,12 +2461,12 @@ class WarfareCog(commands.Cog):
     ):
         """
         GM: Merge multiple armies for a specific NPC/Player house.
-        Usage: !gm_war merge [HouseID] [TargetArmyID] [SourceID_1] [SourceID_2] ...
-        Example: !gm_war merge 5 100 101 102 (Merges 101/102 into 100 for House 5)
+        Usage: !gm_war army_merge [HouseID] [TargetArmyID] [SourceID_1] [SourceID_2] ...
+        Example: !gm_war army_merge 5 100 101 102 (Merges 101/102 into 100 for House 5)
         """
         if not source_ids:
             return await ctx.send(
-                "❌ Usage: `!gm_war merge [HouseID] [TargetID] [SourceID_1] ...`"
+                "❌ Usage: `!gm_war army_merge [HouseID] [TargetID] [SourceID_1] ...`"
             )
 
         # Deduplicate and ensure target is not in sources
@@ -2497,7 +2499,7 @@ class WarfareCog(commands.Cog):
             )
             await ctx.send(f"✅ GM Command: {msg}")
 
-    @gm_war.command(name="form_coalition")
+    @gm_war.command(name="army_coalition", aliases=["form_coalition"])
     @commands.check(is_gm)
     async def gm_form_coalition(
         self, ctx, leader_house_id: int, new_name: str, *army_ids: int
@@ -2506,7 +2508,7 @@ class WarfareCog(commands.Cog):
         GM: Form a coalition from ANY armies.
         leader_house_id: The House that will control the new Coalition.
         army_ids: List of armies to merge (can belong to different houses).
-        Usage: !gm_war form_coalition [LeaderHouseID] "Grand Host" 101 102 103
+        Usage: !gm_war army_coalition [LeaderHouseID] "Grand Host" 101 102 103
         """
         if len(army_ids) < 2:
             return await ctx.send("❌ You must provide at least two army IDs.")
@@ -2535,10 +2537,10 @@ class WarfareCog(commands.Cog):
             )
             await ctx.send(f"✅ GM Command: {msg}")
 
-    @gm_war.command(name="disband_coalition")
+    @gm_war.command(name="coalition_disband", aliases=["disband_coalition"])
     @commands.check(is_gm)
     async def gm_disband_coalition(self, ctx, target_house_id: int, army_id: int):
-        """GM: Disband a coalition belonging to an NPC house. Usage: !gm_war disband_coalition [HouseID] [CoalitionArmyID]"""
+        """GM: Disband a coalition belonging to an NPC house. Usage: !gm_war coalition_disband [HouseID] [CoalitionArmyID]"""
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
             if not game:
@@ -2836,13 +2838,14 @@ class WarfareCog(commands.Cog):
 
             await ctx.send(msg)
 
-    @gm_war.command(name="transfer")
+    @gm_war.command(name="force_merge", aliases=["transfer"])
     @commands.check(is_gm)
     async def gm_transfer(self, ctx, source_army_id: int, target_army_id: int):
         """
-        GM: Instantly transfers one army's troops into another, deleting the source.
-        Bypasses all game rules (owner, status, location).
-        Usage: !gm_war transfer [SourceArmyID] [TargetArmyID]
+        GM: Force-merges one army into another, deleting the source.
+        Bypasses normal ownership, status, and location rules.
+        Usage: !gm_war force_merge [SourceArmyID] [TargetArmyID]
+        Alias: !gm_war transfer
         """
         async with get_session() as session:
             # We don't need game or user objects here as the service will handle validation
@@ -2854,9 +2857,9 @@ class WarfareCog(commands.Cog):
             )
 
             if success:
-                await ctx.send(f"✅ **GM Transfer Complete:** {msg}")
+                await ctx.send(f"✅ **GM Force Merge Complete:** {msg}")
             else:
-                await ctx.send(f"❌ **GM Transfer Failed:** {msg}")
+                await ctx.send(f"❌ **GM Force Merge Failed:** {msg}")
 
     @gm_war.command(name="reassign")
     @commands.check(is_gm)

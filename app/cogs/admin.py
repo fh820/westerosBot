@@ -22,6 +22,7 @@ from app.db.repositories import GameRepo
 from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 from app.services.warfare_service import WarfareService
+from app.services.world_event_service import WorldEventService
 from app.services.common import slugify
 import os
 import json
@@ -146,6 +147,7 @@ class AdminCog(commands.Cog):
                 ("battle-rumours", public_read_only),
                 ("battle-reports", public_read_only),
                 ("rumours", public_read_only),
+                ("gambling-den", public_read_write),
                 ("marriages", public_read_only),
                 ("declarations", public_read_only),
                 ("general-movements", public_read_only),
@@ -722,6 +724,81 @@ class AdminCog(commands.Cog):
                     f"❌ **FAILURE!** The database query returned `None`.\n"
                     f"This is the root cause of the error. It means the bot cannot find a `GamePlayer` associated with your Discord ID for this specific game."
                 )
+
+    @commands.command(name="gm_chronicle", aliases=["chronicle", "timeline"])
+    @commands.has_permissions(administrator=True)
+    async def gm_chronicle(self, ctx, limit_or_query: str = "25", *, query: str = None):
+        """GM: Shows the recent world chronicle."""
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("No active game.")
+
+            limit = 25
+            search_query = None
+            first = (limit_or_query or "").strip()
+            if first.isdigit():
+                limit = max(1, min(int(first), 100))
+                search_query = query.strip() if query else None
+            else:
+                search_query = " ".join(part for part in [first, query] if part).strip()
+
+            events = await WorldEventService(session).recent(
+                game.game_id, limit=limit, query=search_query
+            )
+            if not events:
+                suffix = f" for `{search_query}`" if search_query else ""
+                return await ctx.send(f"No world chronicle entries found{suffix}.")
+
+            title = "World Chronicle"
+            if search_query:
+                title += f" - {search_query}"
+            lines = [WorldEventService.format_event(event) for event in reversed(events)]
+            chunks = []
+            current = []
+            current_len = 0
+            for line in lines:
+                line_len = len(line) + 2
+                if current and current_len + line_len > 3600:
+                    chunks.append("\n\n".join(current))
+                    current = []
+                    current_len = 0
+                current.append(line)
+                current_len += line_len
+            if current:
+                chunks.append("\n\n".join(current))
+
+            for index, chunk in enumerate(chunks, start=1):
+                embed_title = title if len(chunks) == 1 else f"{title} ({index}/{len(chunks)})"
+                embed = discord.Embed(
+                    title=embed_title,
+                    description=chunk,
+                    color=discord.Color.dark_gold(),
+                )
+                embed.set_footer(
+                    text=f"Showing {len(events)} event(s). Newest entries are at the bottom."
+                )
+                await ctx.send(embed=embed)
+
+    @commands.command(name="gm_log_note")
+    @commands.has_permissions(administrator=True)
+    async def gm_log_note(self, ctx, *, note: str):
+        """GM: Adds a manual note to the world chronicle."""
+        async with get_session() as session:
+            game = await GameRepo.get_active_game(session, ctx.guild.id)
+            if not game:
+                return await ctx.send("No active game.")
+
+            await WorldEventService(session).log(
+                game.game_id,
+                "note",
+                "gm_note",
+                note[:250],
+                note,
+                metadata={"author_id": ctx.author.id, "author": str(ctx.author)},
+            )
+            await session.commit()
+            await ctx.send("Chronicle note added.")
 
     @commands.command(name="set_crown")
     @commands.has_permissions(administrator=True)

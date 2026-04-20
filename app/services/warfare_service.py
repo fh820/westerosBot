@@ -3502,7 +3502,7 @@ class WarfareService:
         """
         GM Tool: Force-merges one army into another, bypassing all game rules.
         - Cancels movement of the source army if it's marching.
-        - Adds source troops/composition to the target army.
+        - Adds source troops/composition, fleet cargo, and treasury to the target army.
         - Deletes the source army.
         """
         if source_army_id == target_army_id:
@@ -3519,6 +3519,13 @@ class WarfareService:
             if source_army.army_type != target_army.army_type:
                 return False, "Cannot merge a land army into a fleet or vice-versa."
 
+            source_name = source_army.commander_name or f"Army {source_army_id}"
+            target_name = target_army.commander_name or f"Army {target_army_id}"
+            source_count = source_army.troop_count or 0
+            source_gold = source_army.treasury or 0
+            source_cargo = copy.deepcopy(source_army.cargo or {})
+            source_cargo_count = source_cargo.get("troop_count", 0)
+
             # 2. If the source army is moving, cancel its arrival task and logs
             if source_army.status in ["MARCHING", "SAILING"]:
                 if source_army.task_id:
@@ -3532,31 +3539,35 @@ class WarfareService:
                     delete(MarchLog).where(MarchLog.army_id == source_army_id)
                 )
                 print(
-                    f"[GM ACTION] Cancelled march for Army {source_army_id} during transfer."
+                    f"[GM ACTION] Cancelled march for Army {source_army_id} during force merge."
                 )
 
-            # 3. Merge the composition and troop counts
-            source_comp = source_army.composition or {}
-            target_comp = target_army.composition or {}
+            await self.session.execute(
+                delete(PendingInteraction).where(
+                    or_(
+                        PendingInteraction.army1_id == source_army_id,
+                        PendingInteraction.army2_id == source_army_id,
+                    )
+                )
+            )
+            await self.session.execute(
+                delete(MarchLog).where(MarchLog.army_id == source_army_id)
+            )
 
-            for unit_type, count in source_comp.items():
-                target_comp[unit_type] = target_comp.get(unit_type, 0) + count
-
-            # Update troop counts and composition
-            target_army.troop_count += source_army.troop_count
-            target_army.composition = target_comp
-            flag_modified(target_army, "composition")  # Important for JSONB columns
-
-            # 4. Delete the source army
-            await self.session.delete(source_army)
-
-            # 5. Commit the transaction
+            target_army.treasury = (target_army.treasury or 0) + source_gold
+            await ArmyRepo.merge_army_logic(
+                self.session, source_army=source_army, target_army=target_army
+            )
             await self.session.commit()
 
             msg = (
-                f"**{source_army.troop_count}** troops from **{source_army.commander_name}** (ID: {source_army_id}) "
-                f"were successfully merged into **{target_army.commander_name}** (ID: {target_army_id})."
+                f"**{source_count}** troops from **{source_name}** (ID: {source_army_id}) "
+                f"were force-merged into **{target_name}** (ID: {target_army_id})."
             )
+            if source_gold > 0:
+                msg += f" Added **{source_gold}** gold."
+            if source_cargo_count > 0:
+                msg += f" Merged fleet cargo carrying **{source_cargo_count}** men."
             return True, msg
 
         except Exception as e:

@@ -7,6 +7,7 @@ from app.db.repositories import ArmyRepo, FiefRepo
 from app.db.models import Army, Character, House, Battle, Fief, GamePlayer, User
 from app.services.engine_manager import PF_ENGINE
 from app.services.chronicler import generate_battle_narration
+from app.services.world_event_service import WorldEventService
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import select, delete, or_
 from sqlalchemy.orm import selectinload
@@ -211,6 +212,12 @@ FIELD_PHASE_PLAN_MODIFIERS = {
 class BattleService:
     def __init__(self, session: Session):
         self.session = session
+
+    async def _log_world_event(self, *args, **kwargs):
+        try:
+            await WorldEventService(self.session).log(*args, **kwargs)
+        except Exception as e:
+            print(f"[WORLD LOG] Failed to log battle event: {e}")
 
     # ====================================================================
     # ===== SHARED HELPERS ===============================================
@@ -887,6 +894,23 @@ class BattleService:
         calc_log = self._format_field_odds_breakdown(
             reloaded_battle, attacker, defender, breakdown
         )
+        await self._log_world_event(
+            game_id,
+            "battle",
+            "battle_started",
+            f"Battle {reloaded_battle.id} started: {attacker.commander_name} vs {defender.commander_name}.",
+            (
+                f"Terrain: {terrain_key}. Attacker odds: 1-{odds}. "
+                f"Attacker troops: {attacker.troop_count}. Defender troops: {defender.troop_count}."
+            ),
+            actor_house_id=attacker.house_id,
+            target_house_id=defender.house_id,
+            army_id=attacker.army_id,
+            target_army_id=defender.army_id,
+            battle_id=reloaded_battle.id,
+            metadata={"terrain": terrain_key, "odds": odds, "battle_type": battle_type},
+        )
+        await self.session.commit()
         return reloaded_battle, f"Attacker Odds: 1 - {odds}", calc_log
 
     async def process_field_battle_phase(self, battle_id: int):
@@ -1032,6 +1056,32 @@ class BattleService:
             f"and the field cost fresh {unit_term} before the line could steady."
         )
 
+        await self._log_world_event(
+            battle.game_id,
+            "battle",
+            "battle_phase_resolved",
+            f"Battle {battle.id} {previous_phase.title()} resolved: {'Attacker' if is_attacker_win else 'Defender'} won.",
+            (
+                f"Score: {battle.attacker_score}-{battle.defender_score}. "
+                f"Losses: attacker {att_losses}, defender {def_losses}. "
+                f"Next phase: {battle.phase}."
+            ),
+            actor_house_id=attacker_army.house_id if is_attacker_win else defender_army.house_id,
+            target_house_id=defender_army.house_id if is_attacker_win else attacker_army.house_id,
+            army_id=attacker_army.army_id,
+            target_army_id=defender_army.army_id,
+            battle_id=battle.id,
+            metadata={
+                "phase": previous_phase,
+                "roll": roll,
+                "phase_odds": phase_odds,
+                "attacker_score": battle.attacker_score,
+                "defender_score": battle.defender_score,
+                "attacker_losses": att_losses,
+                "defender_losses": def_losses,
+                "winner": "attacker" if is_attacker_win else "defender",
+            },
+        )
         await self.session.commit()
         return (
             battle,
@@ -1412,6 +1462,29 @@ class BattleService:
                 f"Morale: Attacker `{battle.attacker_morale}` / Defender `{battle.defender_morale}`\n"
                 f"Supply: Attacker `{battle.attacker_supply}` / Defender `{battle.defender_supply}`"
             )
+            await self._log_world_event(
+                battle.game_id,
+                "siege",
+                "siege_streets_resolved",
+                f"Siege {battle.id} street fighting resolved: {winner} won.",
+                (
+                    f"Roll {roll} against attacker odds 1-{odds}. "
+                    f"Losses: attacker {att_losses}, defender {def_losses}."
+                ),
+                actor_house_id=attacker_army.house_id if attacker_wins else defender_army.house_id,
+                target_house_id=defender_army.house_id if attacker_wins else attacker_army.house_id,
+                army_id=attacker_army.army_id,
+                target_army_id=defender_army.army_id,
+                fief_id=battle.fief_id,
+                battle_id=battle.id,
+                metadata={
+                    "roll": roll,
+                    "odds": odds,
+                    "winner": winner,
+                    "attacker_losses": att_losses,
+                    "defender_losses": def_losses,
+                },
+            )
             await self.session.commit()
             return (
                 battle,
@@ -1536,6 +1609,34 @@ class BattleService:
             f"Casualty rates: attacker `{att_loss_pct:.0%}` / defender `{def_loss_pct:.0%}`\n"
             f"Casualties: attacker `{att_losses}` / defender `{def_losses}`\n"
             f"Result check: {result_note}"
+        )
+
+        await self._log_world_event(
+            battle.game_id,
+            "siege",
+            "siege_turn_resolved",
+            f"Siege {battle.id} turn {battle.round_number} resolved at {battle.fief.name if battle.fief else 'unknown fief'}.",
+            (
+                f"Actions: attacker {att_action}, defender {def_action}. "
+                f"Walls: {old_wall} -> {battle.wall_integrity}. "
+                f"Supply A/D: {old_att_supply}->{battle.attacker_supply} / {old_def_supply}->{battle.defender_supply}. "
+                f"Losses A/D: {att_losses}/{def_losses}. {result_note}"
+            ),
+            actor_house_id=attacker_army.house_id,
+            target_house_id=defender_army.house_id,
+            army_id=attacker_army.army_id,
+            target_army_id=defender_army.army_id,
+            fief_id=battle.fief_id,
+            battle_id=battle.id,
+            metadata={
+                "attacker_action": att_action,
+                "defender_action": def_action,
+                "old_wall": old_wall,
+                "new_wall": battle.wall_integrity,
+                "attacker_losses": att_losses,
+                "defender_losses": def_losses,
+                "result_note": result_note,
+            },
         )
 
         battle.attacker_plan = SIEGE_DEFAULT_ATTACKER_ACTION
@@ -1809,6 +1910,31 @@ class BattleService:
             f"Loot transferred: `{loot}`"
         )
 
+        await self._log_world_event(
+            battle.game_id,
+            "battle" if battle.battle_type != "SIEGE" else "siege",
+            "battle_concluded" if battle.battle_type != "SIEGE" else "siege_fight_concluded",
+            f"{battle.battle_type.replace('_', ' ').title()} {battle.id} concluded: {winner.commander_name} defeated {loser.commander_name}.",
+            (
+                f"Final score: {battle.attacker_score}-{battle.defender_score}. "
+                f"Rout losses: winner {winner_rout_losses}, loser {loser_rout_losses}. "
+                f"Destroyed: {is_destroyed}. Loot: {loot}."
+            ),
+            actor_house_id=winner.house_id,
+            target_house_id=loser.house_id,
+            army_id=winner.army_id,
+            target_army_id=loser.army_id,
+            fief_id=battle.fief_id,
+            battle_id=battle.id,
+            metadata={
+                "score_index": score_index,
+                "winner_rout_losses": winner_rout_losses,
+                "loser_rout_losses": loser_rout_losses,
+                "destroyed": is_destroyed,
+                "loot": loot,
+            },
+        )
+
         # 8. Database Cleanup (CRITICAL FIX: ORDER MATTERS)
         try:
             if not is_siege_victory:
@@ -1879,6 +2005,21 @@ class BattleService:
         battle_type = battle.battle_type
         round_number = battle.round_number or 0
         score = f"{battle.attacker_score or 0}-{battle.defender_score or 0}"
+
+        await self._log_world_event(
+            battle.game_id,
+            "battle" if battle_type != "SIEGE" else "siege",
+            "battle_cancelled",
+            f"{battle_type.replace('_', ' ').title()} {battle.id} cancelled by GM.",
+            f"Cancelled at round/turn {round_number} with score {score}. No aftermath was applied.",
+            actor_house_id=attacker.house_id if attacker else None,
+            target_house_id=defender.house_id if defender else None,
+            army_id=attacker.army_id if attacker else None,
+            target_army_id=defender.army_id if defender else None,
+            fief_id=battle.fief_id,
+            battle_id=battle.id,
+            metadata={"round_number": round_number, "score": score, "no_aftermath": True},
+        )
 
         await self.session.delete(battle)
         await self.session.commit()
@@ -2184,6 +2325,24 @@ class BattleService:
             f"Starting state: walls `100`, attacker supply `100`, defender supply `100`, "
             f"attacker morale `100`, defender morale `100`"
         )
+        await self._log_world_event(
+            game_id,
+            "siege",
+            "siege_started",
+            f"Siege {reloaded.id} started: {attacker.commander_name} besieged {fief.name}.",
+            (
+                f"Defender: {defender.commander_name}. Defense: {defense_bonus_str}. "
+                f"Attacker odds: 1-{final_odds}."
+            ),
+            actor_house_id=attacker.house_id,
+            target_house_id=defender.house_id,
+            army_id=attacker.army_id,
+            target_army_id=defender.army_id,
+            fief_id=fief.fief_id,
+            battle_id=reloaded.id,
+            metadata={"defense": defense_bonus_str, "odds": final_odds},
+        )
+        await self.session.commit()
         return reloaded, f"Odds: {final_odds}", calc_log
 
     async def resolve_siege_consequences(self, battle_id: int):
@@ -2221,6 +2380,23 @@ class BattleService:
 
             fief.owner_id = winner.house_id
             fief.integration = 0.10
+            await self._log_world_event(
+                battle.game_id,
+                "fief",
+                "fief_captured",
+                f"{fief.name} captured by {winner.house.name if winner.house else 'Unknown House'}.",
+                (
+                    f"Previous owner: {victim_house.name if victim_house else 'None'}. "
+                    f"Loot transferred to occupying force: {loot}. Integration reset to 10%."
+                ),
+                actor_house_id=winner.house_id,
+                target_house_id=victim_house.house_id if victim_house else None,
+                army_id=winner.army_id,
+                target_army_id=loser.army_id if loser else None,
+                fief_id=fief.fief_id,
+                battle_id=battle.id,
+                metadata={"loot": loot, "integration": 0.10},
+            )
 
             winner.location_x, winner.location_y = fief.location_x, fief.location_y
             winner.status = "GARRISONED"
@@ -2283,6 +2459,20 @@ class BattleService:
         else:
             # --- DEFENDER WINS ---
             loser = attacker_army
+            await self._log_world_event(
+                battle.game_id,
+                "siege",
+                "siege_repelled",
+                f"Siege {battle.id} repelled at {battle.fief.name if battle.fief else 'unknown fief'}.",
+                f"The defenders held. Attacking army: {loser.commander_name if loser else 'Unknown'}.",
+                actor_house_id=defender_army.house_id if defender_army else None,
+                target_house_id=attacker_army.house_id if attacker_army else None,
+                army_id=defender_army.army_id if defender_army else None,
+                target_army_id=attacker_army.army_id if attacker_army else None,
+                fief_id=battle.fief_id,
+                battle_id=battle.id,
+                metadata={"attacker_destroyed": bool(loser and loser.troop_count <= 0)},
+            )
 
             # --- DB CLEANUP ---
             if loser and loser.troop_count <= 0:

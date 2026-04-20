@@ -4,6 +4,7 @@ from sqlalchemy import (
     BigInteger,
     Integer,
     String,
+    Text,
     Boolean,
     Float,
     ForeignKey,
@@ -421,6 +422,34 @@ class ScoutReport(Base):
     target_fief = relationship("Fief", foreign_keys=[target_fief_id])
     requester_house = relationship("House", foreign_keys=[requester_house_id])
     target_house = relationship("House", foreign_keys=[target_house_id])
+
+
+class WorldEvent(Base):
+    """GM-facing campaign timeline event."""
+
+    __tablename__ = "world_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    game_id = Column(Integer, ForeignKey("games.game_id"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    category = Column(String, default="system", nullable=False, index=True)
+    event_type = Column(String, default="note", nullable=False, index=True)
+    title = Column(String, nullable=False)
+    summary = Column(Text, nullable=True)
+    actor_house_id = Column(Integer, ForeignKey("houses.house_id"), nullable=True)
+    target_house_id = Column(Integer, ForeignKey("houses.house_id"), nullable=True)
+    army_id = Column(Integer, ForeignKey("armies.army_id"), nullable=True)
+    target_army_id = Column(Integer, ForeignKey("armies.army_id"), nullable=True)
+    fief_id = Column(Integer, ForeignKey("fiefs.fief_id"), nullable=True)
+    battle_id = Column(Integer, nullable=True, index=True)
+    event_metadata = Column(JSON, default={})
+
+    game = relationship("Game")
+    actor_house = relationship("House", foreign_keys=[actor_house_id])
+    target_house = relationship("House", foreign_keys=[target_house_id])
+    army = relationship("Army", foreign_keys=[army_id])
+    target_army = relationship("Army", foreign_keys=[target_army_id])
+    fief = relationship("Fief")
 
 
 class PendingInteraction(Base):

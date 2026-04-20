@@ -324,6 +324,47 @@ Stop paying tax:
 
 Stopping tax is a political action. Expect consequences.
 
+## Gambling
+
+Use gambling commands in `#gambling-den`.
+
+Show gambling options:
+
+```text
+!gamble
+```
+
+### Blackjack
+
+Command:
+
+```text
+!blackjack <bet>
+```
+
+Alias:
+
+```text
+!bj <bet>
+```
+
+Example:
+
+```text
+!blackjack 100
+```
+
+Rules:
+
+- The bet is taken from your house treasury when the hand starts.
+- Normal win pays back your stake plus equal winnings.
+- Blackjack pays back your stake plus 1.5x winnings.
+- Push returns your stake.
+- Losing keeps the wager in the gambling den.
+- `Double` charges another copy of your original bet, draws one card, and then stands.
+
+If you cannot play, check that you are in `#gambling-den`, have an active house claim, and have enough gold in your house treasury.
+
 ## Armies And Fleets
 
 ### View Your Forces
@@ -503,28 +544,31 @@ Then tell the GM which fleet is supporting which siege.
 ### Split An Army
 
 ```text
-!split <army_id> <amount> <new_name>
+!army_split <army_id> <amount> <new_name>
 ```
 
 Example:
 
 ```text
-!split 123 500 Northern Vanguard
+!army_split 123 500 Northern Vanguard
 ```
+
+Alias: `!split`
 
 ### Merge Armies
 
 ```text
-!merge <target_id> <source_id_1> <source_id_2> ...
+!army_merge <target_id> <source_id_1> <source_id_2> ...
 ```
 
 Example:
 
 ```text
-!merge 123 124 125
+!army_merge 123 124 125
 ```
 
 The target army survives; source armies are merged into it.
+Alias: `!merge`
 
 ### Merge Everything At A Location
 
@@ -543,22 +587,25 @@ Merges your stationary units of the same type at that location.
 ### Form A Coalition Army
 
 ```text
-!form_coalition <new_name> <army_id_1> <army_id_2> ...
+!army_coalition <new_name> <army_id_1> <army_id_2> ...
 ```
 
 Example:
 
 ```text
-!form_coalition Northern Host 123 456 789
+!army_coalition Northern Host 123 456 789
 ```
 
 Coalitions can include multiple houses. If other player-controlled houses are involved, expect consent prompts.
+Alias: `!form_coalition`
 
 ### Disband A Coalition
 
 ```text
-!disband <army_id>
+!coalition_disband <army_id>
 ```
+
+Alias: `!disband`
 
 ### Rename A Commander
 
