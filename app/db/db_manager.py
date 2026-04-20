@@ -1,6 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator  # <--- IMPORT THIS
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from app.db.models import Base
@@ -39,6 +40,24 @@ async def init_db():
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(
+                text(
+                    """
+                    ALTER TABLE battles
+                    ADD COLUMN IF NOT EXISTS phase VARCHAR DEFAULT 'ROUND',
+                    ADD COLUMN IF NOT EXISTS round_number INTEGER DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS terrain VARCHAR DEFAULT 'unknown',
+                    ADD COLUMN IF NOT EXISTS attacker_morale INTEGER DEFAULT 100,
+                    ADD COLUMN IF NOT EXISTS defender_morale INTEGER DEFAULT 100,
+                    ADD COLUMN IF NOT EXISTS attacker_plan VARCHAR,
+                    ADD COLUMN IF NOT EXISTS defender_plan VARCHAR,
+                    ADD COLUMN IF NOT EXISTS attacker_supply INTEGER DEFAULT 100,
+                    ADD COLUMN IF NOT EXISTS defender_supply INTEGER DEFAULT 100,
+                    ADD COLUMN IF NOT EXISTS wall_integrity INTEGER,
+                    ADD COLUMN IF NOT EXISTS blockade_fleet_id INTEGER
+                    """
+                )
+            )
         print("✅ Database Connected & Tables Initialized.")
     except Exception as e:
         print(f"❌ Database Connection Failed: {e}")

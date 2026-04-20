@@ -376,6 +376,17 @@ class Battle(Base):
 
     battle_type = Column(String, default="FIELD")  # "FIELD" or "SIEGE"
     siege_phase = Column(String, nullable=True)  # "WALLS" or "STREETS"
+    phase = Column(String, default="ROUND")
+    round_number = Column(Integer, default=0)
+    terrain = Column(String, default="unknown")
+    attacker_morale = Column(Integer, default=100)
+    defender_morale = Column(Integer, default=100)
+    attacker_plan = Column(String, nullable=True)
+    defender_plan = Column(String, nullable=True)
+    attacker_supply = Column(Integer, default=100)
+    defender_supply = Column(Integer, default=100)
+    wall_integrity = Column(Integer, nullable=True)
+    blockade_fleet_id = Column(Integer, ForeignKey("armies.army_id"), nullable=True)
     att_start_count = Column(Integer, default=0)
     def_start_count = Column(Integer, default=0)
     # Store the Fief being sieged
@@ -385,6 +396,31 @@ class Battle(Base):
     fief = relationship("Fief")
     game = relationship("Game")
     winner_id = Column(Integer, nullable=True)
+
+
+class ScoutReport(Base):
+    """Stores fuzzy intelligence gathered by scouting."""
+
+    __tablename__ = "scout_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    game_id = Column(Integer, ForeignKey("games.game_id"), nullable=False)
+    scout_army_id = Column(Integer, ForeignKey("armies.army_id"), nullable=False)
+    target_army_id = Column(Integer, ForeignKey("armies.army_id"), nullable=True)
+    target_fief_id = Column(Integer, ForeignKey("fiefs.fief_id"), nullable=True)
+    requester_house_id = Column(Integer, ForeignKey("houses.house_id"), nullable=False)
+    target_house_id = Column(Integer, ForeignKey("houses.house_id"), nullable=True)
+    report_type = Column(String, default="army")
+    confidence = Column(String, default="poor")
+    result = Column(JSON, default={})
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    scout_army = relationship("Army", foreign_keys=[scout_army_id])
+    target_army = relationship("Army", foreign_keys=[target_army_id])
+    target_fief = relationship("Fief", foreign_keys=[target_fief_id])
+    requester_house = relationship("House", foreign_keys=[requester_house_id])
+    target_house = relationship("House", foreign_keys=[target_house_id])
 
 
 class PendingInteraction(Base):

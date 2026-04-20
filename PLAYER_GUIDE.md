@@ -476,6 +476,28 @@ Example:
 !disembark 456
 ```
 
+### Naval War And Blockades
+
+Ships are handled in simple mode: a ship is a ship. Fleets can fight other fleets, carry land armies, support coastal operations, and help blockade a besieged coastal fief.
+
+Players do not attach blockades directly. A GM can attach a fleet to an active siege when the fleet is in position and belongs to the attacking side.
+
+What a blockade does:
+
+- Makes it harder for the defenders to keep supplies moving.
+- Adds pressure to long sieges.
+- Can make starvation and surrender more likely.
+- Can be contested by hostile fleets in the area.
+
+Common blockade setup:
+
+```text
+!army
+!sail <fleet_id>
+```
+
+Then tell the GM which fleet is supporting which siege.
+
 ## Army Management
 
 ### Split An Army
@@ -700,7 +722,9 @@ If the other character is player-controlled, that player must consent. If the ot
 
 ## Battles, Interceptions, And Gates
 
-Players do not usually start battles directly. GMs start manual battles, and automatic battle prompts can happen after army interceptions.
+Players do not usually start battles directly. GMs start manual battles, and automatic battle prompts can happen after army interceptions. Once a battle or siege exists, involved players can still make tactical choices.
+
+For a focused player brief on the revamp, read `BATTLE_SYSTEM_CHANGES.md`.
 
 When your army encounters another force:
 
@@ -708,6 +732,120 @@ When your army encounters another force:
 - You may be asked to choose battle, meeting, or march on.
 - Respond before the timer expires.
 - If battle starts, reports appear in `#battle-reports`.
+
+### Field Battles
+
+Field battles are resolved in phases instead of one all-or-nothing roll.
+
+The usual flow is:
+
+- Skirmish: scouts, archers, light troops, opening maneuvers.
+- Maneuver: both sides try to create an advantage before the main commitment.
+- Main clash: the hardest fighting.
+- Press: the side with momentum tries to turn pressure into a decision.
+- Rout or pursuit: one side tries to withdraw, break through, or run down the enemy.
+
+The bot considers the armies, commanders, terrain, chosen plans, morale, supply, and a limited amount of battlefield chaos. Exact odds are intentionally hidden. The point is to reward good command choices without turning war into a spreadsheet puzzle.
+
+### Battle Plans
+
+Use this when your side is in a field battle:
+
+```text
+!battle_plan <battle_id> <attacker|defender> <plan>
+```
+
+Alias:
+
+```text
+!battle-plan <battle_id> <attacker|defender> <plan>
+```
+
+Example:
+
+```text
+!battle_plan 12 defender defensive
+```
+
+Valid plans:
+
+- `aggressive`: push hard and try to force the issue.
+- `defensive`: hold ground and punish reckless attacks.
+- `flank`: try to stretch or roll up the enemy line.
+- `feint`: bait the enemy into a bad move.
+- `cautious`: avoid traps and preserve the army.
+- `ambush`: attempt a surprise blow.
+- `reserve`: hold strength back for the decisive moment.
+
+Plans are not guaranteed wins. A clever plan can be blunted by bad terrain, enemy caution, poor troops, weak command, low morale, or plain bad luck.
+
+### Sieges
+
+Sieges are multi-turn struggles. They are about walls, food, morale, relief, and whether either side is willing to pay the cost of an assault.
+
+The siege state tracks:
+
+- Wall condition.
+- Defender supplies.
+- Attacker supplies.
+- Morale on both sides.
+- Current attacker and defender actions.
+- Blockade support, if a fleet is attached.
+
+Use this when your side is in a siege:
+
+```text
+!siege_action <battle_id> <attacker|defender> <action>
+```
+
+Attacker actions:
+
+- `invest`: surround and starve the fief.
+- `bombard`: use engines and pressure the walls.
+- `mine`: tunnel or sap under defenses.
+- `assault`: storm the defenses.
+- `raid`: attack stores, foragers, and supply routes.
+
+Defender actions:
+
+- `repair`: focus on keeping the walls standing.
+- `sally`: strike out at the besiegers.
+- `ration`: stretch supplies at a morale cost.
+- `counter_mine`: hunt enemy tunnels and shore up weak points.
+- `ambush`: prepare traps for attackers near the walls.
+
+If the walls break, the siege can become street fighting. If supplies or morale collapse first, surrender becomes more likely. Storming early can work, but it is usually bloody.
+
+### Scouting
+
+Scouting gives fuzzy intelligence, not perfect truth. A good report can reveal the rough size, composition, morale, supply, terrain, status, or likely plan of a target. A poor report may be vague, incomplete, or wrong.
+
+Scout a known army or fleet:
+
+```text
+!scout <your_army_id> <target_army_id>
+```
+
+Scout around a named location:
+
+```text
+!scout_area <your_army_id> <location_name>
+```
+
+Alias:
+
+```text
+!scout-area <your_army_id> <location_name>
+```
+
+View recent reports:
+
+```text
+!intel
+!intel 10
+```
+
+Scouting is affected by distance, mobility, commander quality, terrain, target behavior, and risk. Failed or clumsy scouting may alert the enemy that scouts were seen.
 
 When your army hits a controlled gate:
 
@@ -734,6 +872,7 @@ When your army hits a controlled gate:
 !buy Winterfell archers 300
 !army
 !set_commander 123 Lord Stark
+!scout_area 123 Riverrun
 ```
 
 ### Moving An Army
@@ -741,6 +880,20 @@ When your army hits a controlled gate:
 ```text
 !journey
 !march 123
+```
+
+### Fighting A Battle
+
+```text
+!intel
+!battle_plan 12 attacker feint
+```
+
+### Fighting A Siege
+
+```text
+!siege_action 14 attacker invest
+!siege_action 14 attacker bombard
 ```
 
 ### Moving By Sea
@@ -772,6 +925,10 @@ When your army hits a controlled gate:
 - Use `!me`, `!economy`, and `!army` before major decisions.
 - Use `!journey` before `!march` or `!sail`.
 - Keep important army IDs written down.
+- Scout before committing to a major fight.
+- Choose battle plans that match your troops, terrain, and goal.
+- In sieges, patience saves lives but costs time and supplies.
+- Use fleets to move troops, contest seas, and support coastal sieges.
 - Exact location spelling matters. Use `!fiefs` if unsure.
 - If a command fails in public, try your private quarters.
 - If a button or modal expires, rerun the command.

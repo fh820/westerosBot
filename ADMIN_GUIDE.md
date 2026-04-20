@@ -987,39 +987,96 @@ Use these to fast-forward arrivals during testing or admin-managed events.
 ### Start Field Battle
 
 ```text
-!battle <attacker_id> <defender_id> [ambush=none] [defense=none]
+!battle <attacker_id> <defender_id> [ambush=none] [defense=none] [terrain=unknown]
 ```
 
 Examples:
 
 ```text
 !battle 123 456
-!battle 123 456 minor prepared
+!battle 123 456 good minor
+!battle 123 456 terrain=river
+!battle 123 456 none none hills
 ```
 
 What happens:
 
 - Armies are loaded.
-- Odds are calculated.
+- Battle state is initialized.
+- Terrain, morale, supplies, plans, and phase are tracked.
 - Battle control panel appears in `#battle-reports`.
-- Calculation details go to `#gm-alerts`.
+- GM calculation details go to `#gm-alerts`.
 - Involved players are notified in quarters.
+
+Supported field plans:
+
+- `aggressive`
+- `defensive`
+- `flank`
+- `feint`
+- `cautious`
+- `ambush`
+- `reserve`
+
+Supported terrain values:
+
+- `unknown`
+- `plains`
+- `hills`
+- `forest`
+- `mountains`
+- `river`
+- `marsh`
+- `urban`
+- `coast`
+- `open_sea`
+- `strait`
+- `storm`
+
+Players can set plans for their own side:
+
+```text
+!battle_plan <battle_id> <attacker|defender> <plan>
+!battle-plan <battle_id> <attacker|defender> <plan>
+```
+
+GMs can also use the same command for either side, or set terrain directly:
+
+```text
+!battle_terrain <battle_id> <terrain>
+!battle-terrain <battle_id> <terrain>
+```
 
 ### Battle Control Panel
 
 The battle UI supports:
 
-- Rolling a round.
-- Setting modifiers.
-- Ending the battle.
+- `Resolve Phase`, which advances the current battle or siege state.
+- `Fast Resolve`, for quicker GM-run outcomes.
+- GM controls for ending or managing the battle.
 
 The bot tracks:
 
-- Attacker score.
-- Defender score.
-- Current odds.
-- Casualties.
-- Winner/aftermath.
+- Phase.
+- Round number.
+- Terrain.
+- Attacker and defender morale.
+- Attacker and defender supply.
+- Attacker and defender plans or siege actions.
+- Wall integrity for sieges.
+- Blockade fleet for coastal sieges.
+- Casualties and aftermath.
+
+Field battles usually move through:
+
+- Skirmish.
+- Maneuver.
+- Main clash.
+- Press.
+- Rout or pursuit.
+- Complete.
+
+Sea battles use the same phased field-battle flow. In simple naval mode, every ship is treated as a ship.
 
 ### Start Siege
 
@@ -1034,6 +1091,58 @@ Examples:
 !siege 123 Riverrun defense=minor
 ```
 
+Sieges are multi-turn. Starting a siege initializes wall integrity, attacker supply, defender supply, morale, default actions, and the siege panel.
+
+Players can set siege actions for their own side:
+
+```text
+!siege_action <battle_id> <attacker|defender> <action>
+```
+
+Attacker actions:
+
+- `invest`
+- `bombard`
+- `mine`
+- `assault`
+- `raid`
+
+Defender actions:
+
+- `repair`
+- `sally`
+- `ration`
+- `counter_mine`
+- `ambush`
+
+If no action is set, the attacker defaults to investing and the defender defaults to rationing. Each `Resolve Phase` press resolves one siege turn or the current street-fighting step.
+
+Sieges can progress through:
+
+- Investment and siege turns.
+- Breach.
+- Street fighting.
+- Surrender, collapse, or completion.
+
+### Attach A Blockade
+
+```text
+!blockade <fleet_id> <battle_id>
+```
+
+This attaches a sea fleet to an active siege as blockade support.
+
+Validation checks include:
+
+- The battle is an active siege.
+- The fleet exists and is a sea force.
+- The fleet has ships.
+- The fleet belongs to the besieging house.
+- The fleet is near the fief.
+- Nearby hostile fleets are not strong enough to obviously contest the blockade.
+
+Blockades increase pressure on defender supplies and make coastal sieges more dangerous. They should be treated as visible military commitments, not invisible modifiers.
+
 ### Resolve Siege Consequences
 
 ```text
@@ -1041,6 +1150,28 @@ Examples:
 ```
 
 This applies the result of a won siege and posts a realm update when successful.
+
+Use this after the siege has actually completed or when the GM has intentionally ruled that the fief falls. It is the ownership/consequence step, not the turn resolver.
+
+### Scouting And Intel
+
+Players can scout known armies/fleets or named areas:
+
+```text
+!scout <own_army_id> <target_army_id>
+!scout_area <own_army_id> <location_name>
+!scout-area <own_army_id> <location_name>
+!intel [limit]
+```
+
+Scouting reports are intentionally fuzzy. They may reveal rough size, composition, status, morale hints, supply hints, terrain, likely plan, or warnings. Bad reports can be vague or misleading, and failed scouting may notify the target that scouts were sighted.
+
+GM guidance:
+
+- Let scouting inform player planning without giving exact math.
+- Treat good reports as useful intelligence, not omniscience.
+- Use failed or risky scouting as roleplay fuel when appropriate.
+- Do not expose exact battle odds or hidden modifiers to players unless you intentionally want a more board-game-like campaign.
 
 ### Auto-Battle Notes
 
@@ -1050,7 +1181,7 @@ Expected flow:
 
 - Bot posts an auto-battle pending prompt to `#gm-alerts`.
 - GMs can cancel/intervene or proceed.
-- If not cancelled, auto-battle rounds and final reports are posted.
+- If not cancelled, the battle service can progress the encounter through the current phased resolver.
 
 Operational caveat: `app/tasks/battle_tasks.py` defines auto-battle tasks, but the active Celery include list in `app/celery_app.py` does not include it. If auto-battles do not fire, check Celery task registration.
 
@@ -1166,10 +1297,27 @@ Ask them to run `!me` in their quarters afterward.
 
 ```text
 !gm_war scan_location Riverrun
-!battle 123 456
+!battle 123 456 terrain=river
+!battle_plan 12 attacker flank
+!battle_plan 12 defender defensive
 ```
 
-Then use the battle panel in `#battle-reports`.
+Then use `Resolve Phase` or `Fast Resolve` in the battle panel in `#battle-reports`.
+
+### Run A Siege
+
+```text
+!siege 123 Storm's End
+!siege_action 14 attacker invest
+!siege_action 14 defender ration
+!blockade 456 14
+```
+
+Use the siege panel to resolve turns. When the siege is complete and the fief should change hands, run:
+
+```text
+!resolve_siege 14
+```
 
 ### Resolve A Stuck Banner Call
 

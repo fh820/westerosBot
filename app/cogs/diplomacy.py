@@ -31,6 +31,49 @@ async def is_gm(ctx):
 class DiplomacyCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.active_meeting_views = {}
+
+    def _clone_meeting_view(self, view: MultiConsentProposalView):
+        fresh_view = MultiConsentProposalView(
+            initiator=view.initiator,
+            consenters=view.consenters,
+            action_name=view.action_name,
+            proposal_embed=view.proposal_embed,
+            on_accept_callback=view.on_accept_callback,
+        )
+        fresh_view.accepted_ids = set(view.accepted_ids)
+        fresh_view._update_footer()
+        return fresh_view
+
+    async def _refresh_meeting_prompt(
+        self, ctx: commands.Context, message_id: int
+    ) -> bool:
+        view = self.active_meeting_views.get(message_id)
+        if not view:
+            return False
+
+        is_authorized = (
+            ctx.author.guild_permissions.administrator
+            or ctx.author.id == view.initiator.id
+            or ctx.author.id in view.required_ids
+        )
+        if not is_authorized:
+            await ctx.send("You are not part of that meeting proposal.")
+            return True
+
+        try:
+            message = await ctx.channel.fetch_message(message_id)
+        except discord.HTTPException:
+            return False
+
+        fresh_view = self._clone_meeting_view(view)
+        try:
+            await message.edit(embed=fresh_view.proposal_embed, view=fresh_view)
+        except discord.HTTPException:
+            return False
+
+        self.active_meeting_views[message_id] = fresh_view
+        return True
 
     async def _handle_union_proposal(
         self, ctx: commands.Context, query: str, action_name: str, icon: str
@@ -1069,10 +1112,31 @@ class DiplomacyCog(commands.Cog):
                 on_accept_callback=on_accept,
             )
 
-            await ctx.send(
+            message = await ctx.send(
                 f"{' '.join(target.mention for target in unique_targets)}, you have received a proposal.",
                 embed=proposal_embed,
                 view=view,
+            )
+            proposal_embed.add_field(
+                name="If Buttons Fail",
+                value=f"Use `!refresh_meeting {message.id}` in this channel.",
+                inline=False,
+            )
+            await message.edit(embed=proposal_embed, view=view)
+            self.active_meeting_views[message.id] = view
+
+    @commands.command(name="refresh_meeting", aliases=["refresh-meeting"])
+    async def refresh_meeting(self, ctx: commands.Context, message_id: int):
+        """
+        Refreshes the buttons on a tracked meeting proposal.
+        Use the Discord message ID of the original meeting proposal.
+        """
+        refreshed = await self._refresh_meeting_prompt(ctx, message_id)
+        if refreshed:
+            await ctx.send(f"Refreshed meeting proposal {message_id}.")
+        else:
+            await ctx.send(
+                "Could not refresh that meeting proposal. It may be too old, in another channel, or from before the bot started tracking meeting prompts. Rerun `!meet` if needed."
             )
 
     async def _create_meeting_channel(
