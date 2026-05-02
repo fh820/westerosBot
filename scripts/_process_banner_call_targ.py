@@ -1,8 +1,11 @@
 import os
 import sys
+from pathlib import Path
 
 # Add project root to the Python path
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from sqlalchemy import select
 from app.db.sync_db import get_sync_session

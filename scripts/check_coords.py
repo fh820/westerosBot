@@ -1,9 +1,12 @@
 import json
 import os
 from collections import defaultdict
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def check_missing_coordinates(filename="master_world_data.json"):
+def check_missing_coordinates(filename=ROOT / "master_world_data.json"):
     # Check if file exists
     if not os.path.exists(filename):
         print(f"❌ Error: Could not find '{filename}' in the current directory.")

@@ -1,4 +1,7 @@
 import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
 
 # Define the Choke Points and which regions they guard
 # Format: "Castle Name": {"connects": [Region A, Region B]}
@@ -74,4 +77,4 @@ def mark_chokepoints(filename):
 
 
 if __name__ == "__main__":
-    mark_chokepoints("master_world_data.json")
+    mark_chokepoints(ROOT / "master_world_data.json")

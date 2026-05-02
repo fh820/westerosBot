@@ -733,7 +733,7 @@ The repo includes scenario files:
 
 `!load_scenario <scenario_name>` applies historical scenario changes through `ScenarioService`.
 
-`!setup_game` also supports ad hoc attached JSON patch files. Repo-level patch examples include regional update files such as `north_update.json`, `riverland_update.json`, `essos_update.json`, and others.
+`!setup_game` also supports ad hoc attached JSON patch files. Repo-level patch examples now live under `data/patches/`, including files such as `north_update.json`, `riverland_update.json`, `essos_update.json`, and others.
 
 ## Deployment
 
@@ -766,4 +766,4 @@ Potential deployment issue: `docker-compose.yml` uses `celery -A app.tasks.celer
 - `docker-compose.yml` points Celery at `app.tasks.celery_app`, while the active Celery app module appears to be `app/celery_app.py`.
 - `app/cogs/economy.py` defines `deposit_gold` twice with the same command name in the class; in Python, the later method overrides the earlier class attribute. This may be intentional replacement code, but it is worth cleaning up.
 - Some comments and console strings contain mojibake/encoding artifacts. Functionally harmless, but they make logs and docs harder to read.
-- `strip_comments.py` is currently untracked in git.
+- `scripts/strip_comments.py` is currently tracked in git.

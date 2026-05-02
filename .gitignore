@@ -38,3 +38,8 @@ Thumbs.db
 
 # Generated maps (runtime artifacts)
 data/generated_maps/
+
+# Local helper output
+debug/db_log_visualization.png
+debug/historic_interception.png
+tmp/

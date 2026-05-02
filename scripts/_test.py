@@ -1,7 +1,14 @@
 import asyncio
 import datetime
 import os
+import sys
+from pathlib import Path
 from sqlalchemy import delete
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from app.db.db_manager import get_session
 from app.db.models import Game, House, Army, MarchLog
 from app.services.warfare_service import WarfareService, PF_ENGINE

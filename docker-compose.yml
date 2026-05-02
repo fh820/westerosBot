@@ -17,7 +17,7 @@ services:
   # We will implement the code for this in the next step, but we set up the container now.
   worker:
     build: .
-    command: celery -A app.tasks.celery_app worker --loglevel=info
+    command: celery -A app.celery_app:celery_app worker --loglevel=info
     volumes:
       - .:/app
     env_file: .env
@@ -30,9 +30,9 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: westeros_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: fairytail12345
+      POSTGRES_DB: westeros_local
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:

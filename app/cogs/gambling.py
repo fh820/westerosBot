@@ -61,7 +61,26 @@ def format_hand(hand: list[str], *, hide_first: bool = False) -> str:
 
 
 def asset_url(filename: str) -> str | None:
-    return f"attachment://{filename}" if (GAMBLING_ASSET_DIR / filename).exists() else None
+    return (
+        f"attachment://{filename}" if (GAMBLING_ASSET_DIR / filename).exists() else None
+    )
+
+
+def blackjack_image_for_result(result: str | None) -> str:
+    if not result:
+        return BLACKJACK_TABLE_IMAGE
+
+    result_lower = result.lower()
+    if "push" in result_lower or "returned" in result_lower:
+        return BLACKJACK_TABLE_IMAGE
+    if (
+        "you win" in result_lower
+        or "dealer busts" in result_lower
+        or "you beat" in result_lower
+        or ("blackjack" in result_lower and "dealer has" not in result_lower)
+    ):
+        return BLACKJACK_WIN_IMAGE
+    return BLACKJACK_TABLE_IMAGE
 
 
 class BlackjackView(discord.ui.View):
@@ -77,6 +96,7 @@ class BlackjackView(discord.ui.View):
         self.player_hand = [self.deck.pop(), self.deck.pop()]
         self.dealer_hand = [self.deck.pop(), self.deck.pop()]
         self.finished = False
+        self.processing = False
         self.message = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -113,28 +133,16 @@ class BlackjackView(discord.ui.View):
         )
         embed.add_field(name="Wager", value=f"**{self.bet}** gold", inline=True)
         if house:
-            embed.add_field(
-                name="House Treasury",
-                value=f"**{house.treasury or 0}** gold",
-                inline=True,
-            )
+            embed.add_field(name="House Treasury", value="**xxxx** gold", inline=True)
         if result:
             embed.description = result
-            result_lower = result.lower()
-            if (
-                "you win" in result_lower
-                or "dealer busts" in result_lower
-                or "you beat" in result_lower
-                or ("blackjack" in result_lower and "dealer has" not in result_lower)
-            ):
-                if url := asset_url(BLACKJACK_WIN_IMAGE):
-                    embed.set_image(url=url)
-            else:
-                if url := asset_url(BLACKJACK_TABLE_IMAGE):
-                    embed.set_image(url=url)
+            if url := asset_url(blackjack_image_for_result(result)):
+                embed.set_image(url=url)
         else:
             embed.description = "Choose your next move."
-            embed.set_footer(text="Table times out after 3 minutes. Unfinished hands forfeit the wager.")
+            embed.set_footer(
+                text="Table times out after 3 minutes. Unfinished hands forfeit the wager."
+            )
             if url := asset_url(BLACKJACK_TABLE_IMAGE):
                 embed.set_image(url=url)
         if url := asset_url(GOLD_DRAGON_IMAGE):
@@ -145,25 +153,46 @@ class BlackjackView(discord.ui.View):
         for child in self.children:
             child.disabled = True
 
+    async def clear_previous_controls(self, interaction: discord.Interaction):
+        try:
+            await interaction.message.edit(view=None)
+        except discord.HTTPException:
+            pass
+
+    async def send_table(
+        self,
+        interaction: discord.Interaction,
+        embed: discord.Embed,
+        *,
+        result: str | None = None,
+        view=None,
+    ):
+        image = blackjack_image_for_result(result)
+        kwargs = {
+            "embed": embed,
+            "files": self.cog._asset_files(image, GOLD_DRAGON_IMAGE),
+        }
+        if view is not None:
+            kwargs["view"] = view
+        self.message = await interaction.followup.send(**kwargs)
+
     async def finish(self, interaction: discord.Interaction, result: str, payout: int):
         self.finished = True
-        self.disable_all()
         async with get_session() as session:
             house = await session.get(House, self.house_id)
             if house and payout > 0:
                 house.treasury = (house.treasury or 0) + payout
             await session.commit()
             embed = self.build_embed(house, reveal_dealer=True, result=result)
-        await interaction.response.edit_message(embed=embed, view=self)
-        self.cog.active_games.pop((interaction.guild_id, self.player_id), None)
+        await self.clear_previous_controls(interaction)
+        await self.send_table(interaction, embed, result=result)
+        self.cog.active_games.pop((self.guild_id, self.player_id), None)
 
     async def dealer_play_and_finish(self, interaction: discord.Interaction):
         while hand_value(self.dealer_hand) < 17:
             self.dealer_hand.append(self.deck.pop())
-
         player_total = hand_value(self.player_hand)
         dealer_total = hand_value(self.dealer_hand)
-
         if dealer_total > 21:
             await self.finish(
                 interaction,
@@ -191,46 +220,55 @@ class BlackjackView(discord.ui.View):
 
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary)
     async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.finished or self.processing:
+            return
+        self.processing = True
+        await interaction.response.defer()
         self.player_hand.append(self.deck.pop())
         player_total = hand_value(self.player_hand)
         if player_total > 21:
-            await self.finish(
+            return await self.finish(
                 interaction,
                 f"You bust with **{player_total}**. You lose **{self.bet}** gold.",
                 0,
             )
-            return
-
         async with get_session() as session:
             house = await session.get(House, self.house_id)
             embed = self.build_embed(house)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self.clear_previous_controls(interaction)
+        await self.send_table(interaction, embed, view=self)
+        self.processing = False
 
     @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary)
     async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.finished or self.processing:
+            return
+        self.processing = True
+        await interaction.response.defer()
         await self.dealer_play_and_finish(interaction)
 
     @discord.ui.button(label="Double", style=discord.ButtonStyle.danger)
     async def double(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.finished or self.processing:
+            return
+        self.processing = True
+        await interaction.response.defer()
         async with get_session() as session:
             house = await session.get(House, self.house_id)
             if not house or (house.treasury or 0) < self.bet:
-                await interaction.response.send_message(
-                    "Your house treasury cannot cover the double.", ephemeral=True
+                await interaction.followup.send(
+                    "Insufficient funds to double.", ephemeral=True
                 )
+                self.processing = False
                 return
-            house.treasury = (house.treasury or 0) - self.bet
+            house.treasury -= self.bet
             self.bet *= 2
             self.player_hand.append(self.deck.pop())
             await session.commit()
-
         if hand_value(self.player_hand) > 21:
-            await self.finish(
-                interaction,
-                f"You doubled and busted with **{hand_value(self.player_hand)}**. You lose **{self.bet}** gold.",
-                0,
+            return await self.finish(
+                interaction, f"Busted with **{hand_value(self.player_hand)}**.", 0
             )
-            return
         await self.dealer_play_and_finish(interaction)
 
     async def on_timeout(self):
@@ -239,7 +277,7 @@ class BlackjackView(discord.ui.View):
         if self.message:
             try:
                 await self.message.edit(view=self)
-            except discord.HTTPException:
+            except:
                 pass
 
 
@@ -248,15 +286,13 @@ class GamblingCog(commands.Cog):
         self.bot = bot
         self.active_games = {}
 
-    def _asset_files(self) -> list[discord.File]:
+    def _asset_files(self, *filenames: str) -> list[discord.File]:
         files = []
-        for filename in (
-            BLACKJACK_TABLE_IMAGE,
-            BLACKJACK_WIN_IMAGE,
-            GAMBLING_DEN_IMAGE,
-            GOLD_DRAGON_IMAGE,
-            CARD_BACK_IMAGE,
-        ):
+        seen = set()
+        for filename in filenames:
+            if filename in seen:
+                continue
+            seen.add(filename)
             path = GAMBLING_ASSET_DIR / filename
             if path.exists():
                 files.append(discord.File(path, filename=filename))
@@ -266,7 +302,6 @@ class GamblingCog(commands.Cog):
         game = await GameRepo.get_active_game(session, ctx.guild.id)
         if not game:
             return None, None, "No active game."
-
         stmt = (
             select(GamePlayer)
             .join(User, User.user_id == GamePlayer.user_id)
@@ -279,98 +314,35 @@ class GamblingCog(commands.Cog):
         return game, player.house, None
 
     def _is_gambling_channel(self, ctx) -> bool:
-        return ctx.channel.name in {"gambling-den", "bot-testing", "bot-commands"} or ctx.author.guild_permissions.administrator
-
-    @commands.command(name="gamble", aliases=["gambling"])
-    async def gamble(self, ctx):
-        """Shows gambling den commands."""
-        if not self._is_gambling_channel(ctx):
-            return await ctx.send("Use gambling commands in #gambling-den.")
-
-        embed = discord.Embed(
-            title="The Gambling Den",
-            description=(
-                "Gold changes hands quickly here.\n\n"
-                "`!blackjack <bet>` or `!bj <bet>`\n"
-                "Play blackjack using your house treasury."
-            ),
-            color=discord.Color.dark_green(),
+        return (
+            ctx.channel.name in {"gambling-den", "bot-testing", "bot-commands"}
+            or ctx.author.guild_permissions.administrator
         )
-        if url := asset_url(GAMBLING_DEN_IMAGE):
-            embed.set_image(url=url)
-        if url := asset_url(GOLD_DRAGON_IMAGE):
-            embed.set_thumbnail(url=url)
-        await ctx.send(embed=embed, files=self._asset_files())
 
     @commands.command(name="blackjack", aliases=["bj"])
     async def blackjack(self, ctx, bet: int):
-        """Play blackjack using your house treasury."""
         if not self._is_gambling_channel(ctx):
-            return await ctx.send("Use blackjack in #gambling-den.")
-        if bet <= 0:
-            return await ctx.send("Bet must be at least 1 gold.")
-        if bet > 10000:
-            return await ctx.send("Maximum blackjack bet is 10,000 gold.")
-
+            return
+        if bet <= 0 or bet > 10000:
+            return await ctx.send("Bet must be between 1 and 10,000.")
         game_key = (ctx.guild.id, ctx.author.id)
         if game_key in self.active_games:
-            return await ctx.send("Finish your current blackjack hand first.")
-
+            return await ctx.send("Finish your current game first.")
         async with get_session() as session:
             game, house, error = await self._player_house(session, ctx)
             if error:
                 return await ctx.send(error)
             if (house.treasury or 0) < bet:
-                return await ctx.send(
-                    f"House {house.name} only has {house.treasury or 0} gold."
-                )
-
-            house.treasury = (house.treasury or 0) - bet
+                return await ctx.send("Insufficient funds.")
+            house.treasury -= bet
             view = BlackjackView(self, ctx, game.game_id, house.house_id, bet)
             self.active_games[game_key] = view
-
-            player_blackjack = is_blackjack(view.player_hand)
-            dealer_blackjack = is_blackjack(view.dealer_hand)
-            if player_blackjack and dealer_blackjack:
-                house.treasury = (house.treasury or 0) + bet
-                await session.commit()
-                view.finished = True
-                view.disable_all()
-                embed = view.build_embed(
-                    house,
-                    reveal_dealer=True,
-                    result="Both sides have blackjack. Push. Your wager is returned.",
-                )
-                self.active_games.pop(game_key, None)
-                return await ctx.send(embed=embed, view=view, files=self._asset_files())
-
-            if player_blackjack:
-                payout = bet + int(bet * 1.5)
-                house.treasury = (house.treasury or 0) + payout
-                await session.commit()
-                view.finished = True
-                view.disable_all()
-                result = f"Blackjack. You win **{payout - bet}** gold."
-                embed = view.build_embed(house, reveal_dealer=True, result=result)
-                self.active_games.pop(game_key, None)
-                return await ctx.send(embed=embed, view=view, files=self._asset_files())
-
-            if dealer_blackjack:
-                await session.commit()
-                view.finished = True
-                view.disable_all()
-                embed = view.build_embed(
-                    house,
-                    reveal_dealer=True,
-                    result=f"Dealer has blackjack. You lose **{bet}** gold.",
-                )
-                self.active_games.pop(game_key, None)
-                return await ctx.send(embed=embed, view=view, files=self._asset_files())
-
             await session.commit()
-            embed = view.build_embed(house)
-
-        view.message = await ctx.send(embed=embed, view=view, files=self._asset_files())
+            view.message = await ctx.send(
+                embed=view.build_embed(house),
+                view=view,
+                files=self._asset_files(BLACKJACK_TABLE_IMAGE, GOLD_DRAGON_IMAGE),
+            )
 
 
 async def setup(bot):

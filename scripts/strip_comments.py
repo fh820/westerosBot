@@ -3,6 +3,7 @@ from io import BytesIO
 from pathlib import Path
 
 EXCLUDE_DIRS = {"venv", ".git", "__pycache__", ".idea"}
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def strip_comments(code: str) -> str:
@@ -35,4 +36,4 @@ def walk(root: Path):
 
 
 if __name__ == "__main__":
-    walk(Path("."))
+    walk(ROOT)

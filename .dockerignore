@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.pyo
+
+bot_env/
+.env
+.git/
+
+# Docs & media
+*.md
+*.docx
+*.jpg
+
+# Generated / temp
+celerybeat-schedule.*
+*.bak
+debug/
+
+# Optional (if not needed at runtime)
+# data/
+# scripts/

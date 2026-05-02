@@ -1,4 +1,9 @@
 import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+MASTER_FILE = ROOT / "master_world_data.json"
+PATCHES_DIR = ROOT / "data" / "patches"
 
 
 def update_coords_from_file(master_path, updates_path):
@@ -8,11 +13,11 @@ def update_coords_from_file(master_path, updates_path):
     """
     try:
         # Load the master data file
-        with open(master_path, "r") as f:
+        with open(master_path, "r", encoding="utf-8") as f:
             master_data = json.load(f)
 
         # Load the updates file
-        with open(updates_path, "r") as f:
+        with open(updates_path, "r", encoding="utf-8") as f:
             update_data = json.load(f)
 
     except FileNotFoundError as e:
@@ -56,7 +61,7 @@ def update_coords_from_file(master_path, updates_path):
             print(f"- {house} ({castle})")
 
     # Save the updated data back to the master file
-    with open(master_path, "w") as f:
+    with open(master_path, "w", encoding="utf-8") as f:
         json.dump(master_data, f, indent=4)
 
     print(f"\nChanges have been saved to '{master_path}'.")
@@ -64,6 +69,5 @@ def update_coords_from_file(master_path, updates_path):
 
 # --- SCRIPT EXECUTION ---
 if __name__ == "__main__":
-    MASTER_FILE = "master_world_data.json"
-    UPDATE_FILE = "beyond_update.json"
+    UPDATE_FILE = PATCHES_DIR / "beyond_update.json"
     update_coords_from_file(MASTER_FILE, UPDATE_FILE)

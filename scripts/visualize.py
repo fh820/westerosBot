@@ -2,9 +2,16 @@ import asyncio
 import os
 import math
 from datetime import datetime
+import sys
+from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from sqlalchemy import select
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from app.db.db_manager import get_session
 from app.db.models import MarchLog
 from app.services.engine_manager import PF_ENGINE
@@ -192,7 +199,8 @@ async def visualize_logs():
             fontsize=16,
         )
 
-        plt.savefig("db_log_visualization.png")
+        output_path = ROOT / "debug" / "db_log_visualization.png"
+        plt.savefig(output_path)
         print("\n🖼️  Generated 'db_log_visualization.png'")
 
 

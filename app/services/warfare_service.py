@@ -3490,6 +3490,7 @@ class WarfareService:
                 cargo_info = f" (carrying {c_count} troops)"
 
         # 6. Delete the Army
+        await ArmyRepo.clear_army_delete_references(self.session, army_id)
         await self.session.delete(army)
         await self.session.commit()
 

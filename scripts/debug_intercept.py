@@ -1,10 +1,17 @@
 import asyncio
 import os
 import math
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from sqlalchemy import select
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from app.db.db_manager import get_session
 from app.db.models import MarchLog, Army
 from app.services.engine_manager import PF_ENGINE
@@ -356,7 +363,7 @@ async def visualize_historic_intercept():
         ax.set_ylabel("Y Coordinate")
         ax.grid(True, linestyle=":", alpha=0.6)
 
-        filename = "historic_interception.png"
+        filename = ROOT / "debug" / "historic_interception.png"
         plt.savefig(filename, bbox_inches="tight", dpi=150)
         print(f"\n🖼️  Generated map: {filename}")
 

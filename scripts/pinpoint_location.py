@@ -1,11 +1,14 @@
 import sys
 import os
+from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+
+ROOT = Path(__file__).resolve().parents[1]
 
 # --- CONFIGURATION ---
 # Use the visual map (jpg) to see terrain features, or the cost map (png) to check collision data
-MAP_PATH = "data/maps/map.jpg"
-OUTPUT_PATH = "pinpoint_result.png"
+MAP_PATH = ROOT / "data" / "maps" / "map.jpg"
+OUTPUT_PATH = ROOT / "debug" / "pinpoint_result.png"
 
 
 def pinpoint(x: int, y: int):

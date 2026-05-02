@@ -15,6 +15,8 @@ from app.db.models import (
     Battle,
     PendingBannerCall,
     PendingInteraction,
+    ScoutReport,
+    WorldEvent,
 )
 from app.services.setup_service import SetupService
 from app.services.scenario_service import ScenarioService
@@ -478,6 +480,12 @@ class AdminCog(commands.Cog):
                     delete(Battle).where(Battle.game_id == game.game_id)
                 )
                 # B. Delete "Leaf" Tables (Data that depends on Houses/Game)
+                await session.execute(
+                    delete(ScoutReport).where(ScoutReport.game_id == game.game_id)
+                )
+                await session.execute(
+                    delete(WorldEvent).where(WorldEvent.game_id == game.game_id)
+                )
                 await session.execute(
                     delete(MarchLog).where(MarchLog.game_id == game.game_id)
                 )

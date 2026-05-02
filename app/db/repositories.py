@@ -1,6 +1,18 @@
-from sqlalchemy import select, delete, and_, or_
+from sqlalchemy import select, delete, and_, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.models import Game, House, User, GamePlayer, Army, Fief, MarchLog
+from app.db.models import (
+    Game,
+    House,
+    User,
+    GamePlayer,
+    Army,
+    Fief,
+    MarchLog,
+    PendingInteraction,
+    Battle,
+    ScoutReport,
+    WorldEvent,
+)
 import datetime
 import copy
 from app.db.models import Fief
@@ -128,6 +140,90 @@ class ArmyRepo:
     @staticmethod
     async def clear_march_logs(session, army_id: int):
         await session.execute(delete(MarchLog).where(MarchLog.army_id == army_id))
+
+    @staticmethod
+    async def clear_army_delete_references(
+        session,
+        army_id: int,
+        *,
+        replacement_army_id: int | None = None,
+    ):
+        """
+        Clears or rewires rows that would block deleting an army by FK.
+        If replacement_army_id is provided, historical references that can safely
+        follow the merged force are moved to the replacement army.
+        """
+        await session.execute(
+            delete(PendingInteraction).where(
+                or_(
+                    PendingInteraction.army1_id == army_id,
+                    PendingInteraction.army2_id == army_id,
+                )
+            )
+        )
+        await session.execute(delete(MarchLog).where(MarchLog.army_id == army_id))
+
+        if replacement_army_id is None:
+            await session.execute(
+                delete(Battle).where(
+                    or_(Battle.attacker_id == army_id, Battle.defender_id == army_id)
+                )
+            )
+            await session.execute(
+                update(Battle)
+                .where(Battle.blockade_fleet_id == army_id)
+                .values(blockade_fleet_id=None)
+            )
+            await session.execute(
+                delete(ScoutReport).where(
+                    or_(
+                        ScoutReport.scout_army_id == army_id,
+                        ScoutReport.target_army_id == army_id,
+                    )
+                )
+            )
+            await session.execute(
+                update(WorldEvent)
+                .where(WorldEvent.army_id == army_id)
+                .values(army_id=None)
+            )
+            await session.execute(
+                update(WorldEvent)
+                .where(WorldEvent.target_army_id == army_id)
+                .values(target_army_id=None)
+            )
+            return
+
+        await session.execute(
+            delete(Battle).where(
+                or_(Battle.attacker_id == army_id, Battle.defender_id == army_id)
+            )
+        )
+        await session.execute(
+            update(Battle)
+            .where(Battle.blockade_fleet_id == army_id)
+            .values(blockade_fleet_id=replacement_army_id)
+        )
+        await session.execute(
+            update(ScoutReport)
+            .where(ScoutReport.scout_army_id == army_id)
+            .values(scout_army_id=replacement_army_id)
+        )
+        await session.execute(
+            update(ScoutReport)
+            .where(ScoutReport.target_army_id == army_id)
+            .values(target_army_id=replacement_army_id)
+        )
+        await session.execute(
+            update(WorldEvent)
+            .where(WorldEvent.army_id == army_id)
+            .values(army_id=replacement_army_id)
+        )
+        await session.execute(
+            update(WorldEvent)
+            .where(WorldEvent.target_army_id == army_id)
+            .values(target_army_id=replacement_army_id)
+        )
 
     @staticmethod
     def _calculate_split(original_comp: dict, split_amount: int, total_troops: int):
@@ -477,6 +573,11 @@ class ArmyRepo:
                 target_army.cargo = None
 
         # 3. Delete the Source Army
+        await ArmyRepo.clear_army_delete_references(
+            session,
+            source_army.army_id,
+            replacement_army_id=target_army.army_id,
+        )
         await session.delete(source_army)
 
         # 4. Flush changes to prepare for commit

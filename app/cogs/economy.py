@@ -6,7 +6,7 @@ from sqlalchemy.orm import selectinload
 from app.db.db_manager import get_session
 from app.db.models import House, Game, GamePlayer, User, Fief, Army
 from app.services.economy import EconomyService
-from app.db.repositories import GameRepo
+from app.db.repositories import ArmyRepo, GameRepo
 from app.checks import is_in_house_channel
 
 from app.ui.economy_view import TransactionView
@@ -423,6 +423,7 @@ class EconomyCog(commands.Cog):
             )
 
             if army.troop_count <= 0:
+                await ArmyRepo.clear_army_delete_references(session, army.army_id)
                 await session.delete(army)
                 response_embed.description = f"You have sold the last **{amount} {unit_type}** from **{army.commander_name}**. The army has been disbanded and all assets transferred."
             else:
@@ -1130,9 +1131,7 @@ class EconomyCog(commands.Cog):
             )
             await ctx.send(msg if success else f"❌ {msg}")
 
-    @commands.command(name="deposit_gold")
-    @commands.check(is_in_house_channel)
-    async def deposit_gold(self, ctx, amount: int, army_id: int):
+    async def _deposit_gold_legacy_unused(self, ctx, amount: int, army_id: int):
         """Transfers gold FROM an Army TO the local Fief."""
         async with get_session() as session:
             game = await GameRepo.get_active_game(session, ctx.guild.id)
@@ -1919,6 +1918,7 @@ class EconomyCog(commands.Cog):
 
             # Delete if empty
             if army.troop_count <= 0:
+                await ArmyRepo.clear_army_delete_references(session, army.army_id)
                 await session.delete(army)
                 response_text += "\n⚠️ Army disbanded (0 troops)."
 

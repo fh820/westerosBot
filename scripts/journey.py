@@ -1,7 +1,13 @@
 import asyncio
 import os
 import json
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # --- Setup Environment and Imports ---
 load_dotenv()
@@ -24,9 +30,9 @@ async def calculate_sea_journey(start_fief: str, end_fief: str):
     # 1. Initialize the Pathfinder Engine
     print("Initializing Pathfinder Engine...")
     pf_engine = Pathfinder(
-        data_file="master_world_data.json",
-        cost_map_file="data/maps/master_coastal_map.png",
-        map_file="data/maps/map.jpg",
+        data_file=str(ROOT / "master_world_data.json"),
+        cost_map_file=str(ROOT / "data" / "maps" / "master_coastal_map.png"),
+        map_file=str(ROOT / "data" / "maps" / "map.jpg"),
     )
     print("✅ Pathfinder Ready.")
 
@@ -37,7 +43,7 @@ async def calculate_sea_journey(start_fief: str, end_fief: str):
     print(f"Finding coordinates for '{start_fief}' and '{end_fief}'...")
 
     try:
-        with open("master_world_data.json", "r", encoding="utf-8") as f:
+        with open(ROOT / "master_world_data.json", "r", encoding="utf-8") as f:
             world_data = json.load(f)
     except FileNotFoundError:
         print("❌ Error: 'master_world_data.json' not found in the root directory.")
