@@ -24,7 +24,7 @@ Architecture & Design
 
 Tech Stack
 - Language: Python 3.12
-- Frameworks/Libraries: discord.py (or a compatible fork), Celery, Redis/RabbitMQ (broker), SQL/JSON-backed persistence
+- Frameworks/Libraries: discord.py, Celery, Redis/RabbitMQ (broker), SQL/JSON-backed persistence
 - Tooling: virtualenv, pytest, Docker (Dockerfile + docker-compose.yml)
 
 Getting Started (developer)
