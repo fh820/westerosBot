@@ -5,7 +5,7 @@ A feature-rich, modular Discord bot simulating large-scale strategy and roleplay
 Project Summary
 - Purpose: Simulates territorial control, battles, economy, diplomacy, and scouting in a persistent game world via Discord interactions.
 - Scope: Multi-cog Discord bot with background workers, data persistence, scenario-driven starting states, and UI views for interactive gameplay.
-- Role (resume-ready): Designed and implemented core bot architecture, wrote high-throughput battle resolution logic, integrated Celery for background tasks, and built robust domain services for gameplay rules and world updates.
+- Role: Designed and implemented core bot architecture, wrote high-throughput battle resolution logic, integrated Celery for background tasks, and built robust domain services for gameplay rules and world updates.
 
 Key Features
 - Real-time gameplay: Discord command handlers and interactive views for player actions.
