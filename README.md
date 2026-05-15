@@ -63,5 +63,3 @@ Highlights & Achievements
 - Authored scenario-driven test harnesses to validate game balance and reproducibility across releases.
 - Reduced UI latency by moving heavy computation off the request path, improving player experience.
 
-Contact
-- Add your preferred email or GitHub handle here for inquiries.
